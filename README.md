@@ -4,7 +4,7 @@
 
 # 🧊 IBTicket
 
-**I**ntelligència **A**rtificial · **B**ig **D**ata · **Ice**berg · **Ticket**s
+**I**ntel·ligència **A**rtificial · **B**ig **D**ata · **Ice**berg · **Ticket**s
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![Flask](https://img.shields.io/badge/Flask-3.0+-000000?style=flat&logo=flask&logoColor=white)](https://flask.palletsprojects.com)
