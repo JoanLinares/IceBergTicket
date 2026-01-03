@@ -1,0 +1,21 @@
+# Requirements del projecte
+
+# Web Framework
+flask>=3.0.0
+python-dotenv>=1.0.0
+
+# Base de dades
+psycopg2-binary>=2.9.9
+
+# Processament de dades
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# Snowflake
+snowflake-connector-python>=3.5.0
+
+# Xifrat
+cryptography>=41.0.0
+
+# Utilitats
+gunicorn>=21.0.0

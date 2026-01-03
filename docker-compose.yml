@@ -1,0 +1,27 @@
+# Docker Compose - Plataforma de Gestió de Tickets
+version: '3.8'
+
+services:
+  # Aplicació Flask principal
+  web:
+    build: .
+    container_name: tickets_app
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+    env_file:
+      - .env
+    volumes:
+      # Mount del codi per hot-reload en desenvolupament
+      - .:/app
+      # Evitar sobreescriure les dependències instal·lades
+      - /app/__pycache__
+    restart: unless-stopped
+    networks:
+      - tickets_network
+
+networks:
+  tickets_network:
+    driver: bridge
