@@ -8,7 +8,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![Flask](https://img.shields.io/badge/Flask-3.0+-000000?style=flat&logo=flask&logoColor=white)](https://flask.palletsprojects.com)
-[![Snowflake](https://img.shields.io/badge/Snowflake-Data%20Warehouse-29B5E8?style=flat&logo=snowflake&logoColor=white)](https://snowflake.com)
+[![Snowflake](https://img.shields.io/badge/Snowflake_Schema-Data%20Warehouse-29B5E8?style=flat&logo=snowflake&logoColor=white)](#)
 [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?style=flat&logo=supabase&logoColor=white)](https://supabase.com)
 
 </div>
@@ -17,71 +17,255 @@
 
 ## 📋 Què és IBTicket?
 
-**IBTicket** és una plataforma web que permet crear **sistemes de gestió de tickets** amb un **data warehouse** automatitzat. Puja un fitxer de dades i la IA genera automàticament una base de dades analítica en model estrella (Snowflake).
+**IBTicket** és una plataforma web que permet crear **sistemes de gestió de tickets** amb bases de dades estructurades automàticament. Puja un fitxer de dades i la **IA interpreta l'estructura** per generar una base de dades amb **model estrella (Snowflake schema)** — dimensions, fets i relacions optimitzades per a consultes analítiques.
 
 ### 🎯 Problema que resol
 
 Les empreses tenen dades de tickets en formats diversos (CSV, Excel, bases de dades) i necessiten:
-- Centralitzar-les en un data warehouse
+- Estructurar-les en un model analític sense feina manual
 - Analitzar-les fàcilment (per categoria, àrea, temps...)
-- Integrar nous tickets des de sistemes externs
-- Alliberar càrrega de la base de dades operativa
+- Integrar nous tickets des de sistemes externs via API
+- Visualitzar l'estructura i fer consultes des de la plataforma
 
 ---
 
-## ✨ Funcionalitats
+## 🔄 Flux de la Plataforma
 
-| Funcionalitat | Descripció |
-|---------------|------------|
-| 📤 **Upload de dades** | Suporta CSV, Parquet, JSON, SQLite |
-| 🤖 **Interpretació amb IA** | Detecta estructura, columnes, relacions |
-| ⭐ **Model estrella automàtic** | Genera dimensions, fets, àrees funcionals |
-| 🔐 **Dades xifrades** | Emmagatzematge segur a Supabase |
-| 🔗 **API REST** | Connection strings per integrar amb altres sistemes |
-| 📊 **Visualització** | Flowchart del schema generat |
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           FLUX COMPLET                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+   👤 USUARI                           🤖 SISTEMA
+   ────────                           ──────────
+
+   1. Login al portal
+         │
+         ▼
+   2. Dashboard amb llista de BD
+         │
+         ├──→ Crear nova BD ─────────→ 3. Upload fitxer (CSV, JSON, 
+         │                                  Parquet, SQLite)
+         │                                       │
+         │                                       ▼
+         │                              4. IA analitza estructura:
+         │                                 • Detecta columnes
+         │                                 • Identifica tipus de dades
+         │                                 • Troba relacions
+         │                                 • Classifica dimensions/fets
+         │                                       │
+         │                                       ▼
+         │                              5. Genera BD amb model estrella:
+         │                                 ┌─────────────────────┐
+         │                                 │    ⭐ SNOWFLAKE     │
+         │                                 │      SCHEMA         │
+         │                                 ├─────────────────────┤
+         │                                 │ dim_categoria       │
+         │                                 │ dim_area            │
+         │                                 │ dim_temps           │
+         │                                 │ dim_prioritat       │
+         │                                 │ fact_tickets        │
+         │                                 └─────────────────────┘
+         │                                       │
+         │                                       ▼
+         │                              6. Xifra i guarda a Supabase Storage
+         │                                       │
+         ▼                                       │
+   7. Entra a una BD ←──────────────────────────┘
+         │
+         ▼
+   8. Sistema descarrega i descifra en memòria
+         │
+         ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │                    ENTORN DE TREBALL                        │
+   │  ┌─────────────────────────────────────────────────────┐   │
+   │  │  📊 Visualitza schema (flowchart dimensions/fets)   │   │
+   │  │  🔍 Executa queries SQL sobre les dades             │   │
+   │  │  ➕ Afegeix nous registres                          │   │
+   │  │  ✏️  Edita dades existents                          │   │
+   │  │  🔗 Obté API Keys per integració externa            │   │
+   │  │  💾 Guarda canvis (xifra i puja)                    │   │
+   │  └─────────────────────────────────────────────────────┘   │
+   └─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+   9. Sortir → neteja memòria
+```
 
 ---
 
-## 🏗️ Arquitectura
+## 🔗 Integració amb Serveis Externs
+
+Cada base de dades té **API Keys úniques** que permeten a sistemes externs enviar nous tickets:
+
+```
+┌─────────────────────┐         ┌─────────────────────────────────┐
+│   SISTEMA EXTERN    │         │         IBTICKET API            │
+│  (CRM, ERP, Web...) │         │                                 │
+├─────────────────────┤         ├─────────────────────────────────┤
+│                     │  POST   │                                 │
+│  Nou ticket ───────────────────→ /api/v1/tickets/{api_key}     │
+│                     │         │         │                       │
+│                     │         │         ▼                       │
+│                     │         │  IA classifica el ticket        │
+│                     │         │  (determina dimensió correcta)  │
+│                     │         │         │                       │
+│                     │         │         ▼                       │
+│                     │         │  Insereix a la BD corresponent  │
+│                     │         │                                 │
+│                     │   GET   │                                 │
+│  Consulta estat ───────────────→ /api/v1/tickets/{api_key}/{id}│
+│                     │         │                                 │
+│                     │   PUT   │                                 │
+│  Actualitza ───────────────────→ /api/v1/tickets/{api_key}/{id}│
+│                     │         │                                 │
+└─────────────────────┘         └─────────────────────────────────┘
+```
+
+**Exemple d'integració:**
+```bash
+# Crear nou ticket des de sistema extern
+curl -X POST https://ibticket.app/api/v1/tickets/sk_abc123 \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Error login", "description": "...", "priority": "alta"}'
+
+# Consultar ticket
+curl https://ibticket.app/api/v1/tickets/sk_abc123/42
+
+# Actualitzar estat
+curl -X PUT https://ibticket.app/api/v1/tickets/sk_abc123/42 \
+  -d '{"status": "resolt"}'
+```
+
+---
+
+## ⭐ Model Estrella (Snowflake Schema)
+
+La IA genera automàticament una estructura optimitzada per a consultes analítiques:
+
+```
+                    ┌─────────────────┐
+                    │  dim_categoria  │
+                    │─────────────────│
+                    │ id              │
+                    │ nom             │
+                    │ descripcio      │
+                    └────────┬────────┘
+                             │
+┌─────────────────┐          │          ┌─────────────────┐
+│    dim_area     │          │          │   dim_temps     │
+│─────────────────│          │          │─────────────────│
+│ id              │          │          │ id              │
+│ nom             │          │          │ data            │
+│ responsable     │          │          │ dia, mes, any   │
+└────────┬────────┘          │          │ trimestre       │
+         │                   │          └────────┬────────┘
+         │     ┌─────────────┴───────────────┐   │
+         │     │        fact_tickets         │   │
+         │     │─────────────────────────────│   │
+         └────→│ id                          │←──┘
+               │ categoria_id (FK)           │
+               │ area_id (FK)                │
+               │ temps_id (FK)               │
+               │ prioritat_id (FK)           │
+               │ titol                       │
+               │ descripcio                  │
+               │ temps_resolucio             │
+               │ estat                       │
+               └─────────────┬───────────────┘
+                             │
+                    ┌────────┴────────┐
+                    │ dim_prioritat   │
+                    │─────────────────│
+                    │ id              │
+                    │ nivell          │
+                    │ sla_hores       │
+                    └─────────────────┘
+```
+
+---
+
+## 🔍 Queries des de la Plataforma
+
+Un cop dins d'una BD, pots executar consultes SQL directament:
+
+```sql
+-- Tickets per categoria l'any 2025
+SELECT c.nom as categoria, COUNT(*) as total
+FROM fact_tickets t
+JOIN dim_categoria c ON t.categoria_id = c.id
+JOIN dim_temps d ON t.temps_id = d.id
+WHERE d.any = 2025
+GROUP BY c.nom
+ORDER BY total DESC;
+
+-- Temps mitjà de resolució per àrea
+SELECT a.nom as area, AVG(t.temps_resolucio) as mitjana_hores
+FROM fact_tickets t
+JOIN dim_area a ON t.area_id = a.id
+WHERE t.estat = 'resolt'
+GROUP BY a.nom;
+
+-- Evolució mensual d'incidències
+SELECT d.mes, d.any, COUNT(*) as tickets
+FROM fact_tickets t
+JOIN dim_temps d ON t.temps_id = d.id
+GROUP BY d.any, d.mes
+ORDER BY d.any, d.mes;
+```
+
+---
+
+## 🏗️ Arquitectura Tècnica
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         PORTAL WEB                              │
+│                         PORTAL WEB                               │
 │  ┌──────────┐    ┌──────────────┐    ┌───────────────────────┐  │
-│  │  Login   │ →  │   Dashboard  │ →  │   Gestió Projectes    │  │
-│  │ (cookies)│    │  (projectes) │    │ (upload, schema, API) │  │
+│  │  Login   │ →  │   Dashboard  │ →  │   Entorn de Treball   │  │
+│  │ (cookies)│    │  (llista BD) │    │ (queries, API keys)   │  │
 │  └──────────┘    └──────────────┘    └───────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
                               │
-                              ▼
-┌────────────────────────────────────────────────────────────────┐
-│                      PROCESSAMENT                              │
-│  ┌──────────────┐    ┌──────────────┐    ┌─────────────────┐   │
-│  │ Parser       │ →  │ IA Inferència│ →  │ Generador       │   │
-│  │ (CSV,JSON..) │    │ (estructura) │    │ Schema Snowflake│   │
-│  └──────────────┘    └──────────────┘    └─────────────────┘   │
-└────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌────────────────────────────────────────────────────────────────┐
-│                     EMMAGATZEMATGE                             │
-│  ┌─────────────────────┐         ┌─────────────────────────┐   │
-│  │     SUPABASE        │         │       SNOWFLAKE         │   │
-│  │  ─────────────────  │         │  ───────────────────    │   │
-│  │  • Usuaris          │         │  • Model estrella       │   │
-│  │  • Projectes        │         │  • Dimensions           │   │
-│  │  • Dades xifrades   │         │  • Taula de fets        │   │
-│  │  • API Keys         │         │  • Consultes analítiques│   │
-│  └─────────────────────┘         └─────────────────────────┘   │
-└────────────────────────────────────────────────────────────────┘
+           ┌──────────────────┴──────────────────┐
+           ▼                                     ▼
+┌─────────────────────────┐         ┌─────────────────────────────┐
+│     PROCESSAMENT IA     │         │      API REST EXTERNA       │
+├─────────────────────────┤         ├─────────────────────────────┤
+│ • Parser fitxers        │         │ POST /api/v1/tickets/{key}  │
+│ • Inferència estructura │         │ GET  /api/v1/tickets/{key}  │
+│ • Generació schema      │         │ PUT  /api/v1/tickets/{key}  │
+│ • Classificació tickets │         │                             │
+└─────────────────────────┘         └─────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      API EXTERNA                                │
-│         POST/PUT /api/v1/tickets/{api_key}                      │
-│         → IA classifica → Insereix a dimensió correcta          │
+│                    SUPABASE                                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  PostgreSQL                          Storage                     │
+│  ───────────                         ───────                     │
+│  • users                             • BD xifrades (AES-256)     │
+│  • files (metadades)                 • Backup fitxers originals  │
+│  • user_files (permisos)                                        │
+│  • api_keys                                                      │
+│  • saved_queries                                                 │
+│                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🔐 Seguretat
+
+| Capa | Protecció |
+|------|-----------|
+| **Autenticació** | Cookies amb TTL configurable |
+| **Dades en repòs** | Xifrat AES-256 a Supabase Storage |
+| **API** | Tokens únics (API Keys) per projecte |
+| **Integritat** | Hash SHA-256 per verificar fitxers |
+| **Transport** | HTTPS |
 
 ---
 
@@ -102,7 +286,7 @@ pip install -r requirements.txt
 
 # Configurar variables d'entorn
 cp .env.example .env
-# Editar .env amb les teves credencials
+# Editar .env amb les credencials de Supabase
 
 # Executar
 python app.py
@@ -115,33 +299,29 @@ python app.py
 ```
 IBTicket/
 ├── app.py                 # Entry point Flask
-├── requirements.txt       # Dependències Python
-├── docker-compose.yml     # Contenidors
+├── requirements.txt       # Dependències
+├── docker-compose.yml     
 ├── Dockerfile
 │
-├── src/                   # Codi de l'aplicació
+├── src/                   # Codi aplicació
 │   ├── api/               # REST API (/api/v1)
-│   │   ├── routers/       # Endpoints
-│   │   ├── controllers/   # Lògica dels endpoints
-│   │   ├── middlewares/   # Auth, validació
-│   │   └── models/        # Schemas request/response
+│   │   ├── routers/       
+│   │   ├── controllers/   
+│   │   └── middlewares/   
 │   │
-│   ├── web/               # Portal web (HTML)
-│   │   ├── routers/       # Rutes web
+│   ├── web/               # Portal web
+│   │   ├── routers/       
 │   │   ├── templates/     # HTML (Jinja2)
-│   │   ├── static/        # CSS, imatges
-│   │   └── middlewares/   # Sessions, cookies
+│   │   └── static/        # CSS, imatges
 │   │
 │   ├── services/          # Lògica de negoci
 │   └── models/            # Models de dades
 │
 └── ml/                    # Machine Learning
-    ├── training/          # Scripts d'entrenament
+    ├── training/          
     ├── model_artifacts/   # Models entrenats
-    ├── notebooks/         # Jupyter notebooks
-    ├── data/              # Dades (raw/processed)
-    ├── evaluation/        # Mètriques, avaluació
-    └── config/            # Configuració ML
+    ├── notebooks/         
+    └── data/              
 ```
 
 ---
@@ -151,48 +331,11 @@ IBTicket/
 | Capa | Tecnologia |
 |------|------------|
 | **Backend** | Python 3.10+ · Flask |
-| **Frontend** | HTML · CSS (server-side rendering) |
-| **Base de dades** | Supabase (PostgreSQL) |
-| **Data Warehouse** | Snowflake |
+| **Frontend** | HTML · CSS (server-side) |
+| **Base de dades** | Supabase (PostgreSQL + Storage) |
 | **ML/IA** | Pandas · Scikit-learn |
-| **Seguretat** | Cryptography (xifrat AES) |
+| **Seguretat** | Cryptography (AES-256) |
 | **Desplegament** | Docker · Gunicorn |
-
----
-
-## 🔐 Seguretat
-
-- **Autenticació**: Cookies amb TTL configurable
-- **Xifrat en repòs**: Dades dels projectes xifrades amb AES-256
-- **API Keys**: Tokens únics per cada projecte
-- **CORS**: Configurat per a peticions controlades
-
----
-
-## 📈 Exemples de Consultes Analítiques
-
-Un cop generat el model estrella, pots obtenir fàcilment:
-
-```sql
--- Tickets per categoria l'any 2024
-SELECT categoria, COUNT(*) 
-FROM fact_tickets 
-JOIN dim_temps ON ... 
-WHERE any = 2024 
-GROUP BY categoria;
-
--- Evolució mensual d'incidències
-SELECT mes, COUNT(*) 
-FROM fact_tickets 
-JOIN dim_temps ON ... 
-GROUP BY mes;
-
--- Mètriques de resolució per àrea
-SELECT area, AVG(temps_resolucio), COUNT(*) 
-FROM fact_tickets 
-JOIN dim_area ON ... 
-GROUP BY area;
-```
 
 ---
 
@@ -204,16 +347,17 @@ GROUP BY area;
 |---------|------------|
 | **I** | **AI** (Intel·ligència Artificial) |
 | **B** | **Big Data** |
-| **Iceberg** | Snowflake (fred) + Profunditat de dades |
+| **Iceberg** | Model Snowflake + profunditat de dades (el que es veu vs el que hi ha sota) |
 | **Ticket** | Gestió de tickets |
-| 🚢 | La "nube del mar" - Cloud computing marítim |
-| ❄️ | Snowflake - Data warehouse |
+| 🚢 | Barco amb servidors = IA navegant les dades + "núvol del mar" (cloud) |
+| ❄️ | Copos = Snowflake schema |
+| 🏔️ | Iceberg = El nom + data warehouse |
 
 ---
 
 ## 📄 Llicència
 
-Projecte de pràctiques - 2026
+Projecte Final de Curs - 2026
 
 ---
 
