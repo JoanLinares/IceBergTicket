@@ -361,6 +361,32 @@ Projecte Final de Curs - 2026
 
 ---
 
+## Models Arrastrar archivos:
+Opción 1 (recomendada): 3 modelos y eliges el mejor
+
+Entrenas 3 pipelines separados (mismo TF-IDF) y comparas en validación:
+
+Pipeline A: TF-IDF + LogisticRegression
+
+Pipeline B: TF-IDF + LinearSVC
+
+Pipeline C: TF-IDF + MultinomialNB
+
+---
+
+## Model subir new ticket:
+Modelo recomendado: TF-IDF + LogisticRegression
+
+Por qué justo aquí:
+
+Te da probabilidades → puedes decidir si la predicción es fiable.
+
+Es rápido en inferencia (ideal para “ticket en tiempo real”).
+
+Es muy estable y fácil de versionar.
+
+Si el ticket es raro, puedes mandarlo a “Other / Review” según confianza.
+
 <div align="center">
 
 **Desenvolupat amb ❄️ per [Joan Linares](https://github.com/JoanLinares)**
