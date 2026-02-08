@@ -80,3 +80,7 @@ def refresh():
         "access_token": access_token,
         "refresh_token": new_refresh
     }), 200
+
+def logout(user_id):
+    UserModel.clear_refresh_token(user_id)
+
