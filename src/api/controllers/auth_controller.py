@@ -1,6 +1,6 @@
 from flask import request, jsonify
 from src.services.auth_service import AuthService
-from src.services.jwt_service import create_token
+from src.services.JWT_service import create_token
 from src.api.middlewares.register_validation import validate_register
 
 @validate_register

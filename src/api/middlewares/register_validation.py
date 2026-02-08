@@ -1,6 +1,6 @@
 from flask import request, jsonify
 from functools import wraps
-from src.services.password_service import validate_password
+from src.services.hash_password_service import validate_password
 
 def validate_register(fn):
     @wraps(fn)
