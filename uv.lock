@@ -368,6 +368,7 @@ dependencies = [
     { name = "pandas", version = "3.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
+    { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "snowflake-connector-python" },
 ]
@@ -380,6 +381,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.9" },
     { name = "pyarrow", specifier = ">=14.0.0" },
+    { name = "pyjwt", specifier = ">=2.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "snowflake-connector-python", specifier = ">=3.5.0" },
 ]
