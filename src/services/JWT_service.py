@@ -1,4 +1,3 @@
-# src/services/jwt_service.py
 import jwt
 import datetime
 import os

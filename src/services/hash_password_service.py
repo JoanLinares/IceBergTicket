@@ -1,4 +1,3 @@
-# src/services/password_service.py
 import re
 from werkzeug.security import generate_password_hash
 
