@@ -10,12 +10,13 @@ ACCESS_TOKEN_HOURS = 24
 
 SECRET = os.getenv("JWT_SECRET", "dev_secret")
 
-def create_token(user_id):
+def create_access_token(user_id: int) -> str:
     payload = {
         "user_id": user_id,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+        "type": "access",
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=ACCESS_TOKEN_HOURS)
     }
-    return jwt.encode(payload, SECRET, algorithm="HS256")
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 def create_refresh_token() -> str:
     # token largo, aleatorio, no guessable

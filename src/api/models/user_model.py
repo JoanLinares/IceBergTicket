@@ -3,11 +3,11 @@ from src.models.DB import get_db
 class UserModel:
 
     @staticmethod
-    def get_by_email_full(email):
+    def get_by_email(email):
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-            SELECT id, password_hash
+            SELECT id
             FROM users
             WHERE email=%s
         """, (email,))
