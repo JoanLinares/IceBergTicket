@@ -370,6 +370,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pyjwt" },
     { name = "python-dotenv" },
+    { name = "requests" },
     { name = "snowflake-connector-python" },
 ]
 
@@ -383,6 +384,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "pyjwt", specifier = ">=2.11.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "requests", specifier = ">=2.32.5" },
     { name = "snowflake-connector-python", specifier = ">=3.5.0" },
 ]
 

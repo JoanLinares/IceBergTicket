@@ -5,8 +5,10 @@ from src.api.middlewares.register_validation import validate_register
 from src.services.JWT_service import (
     create_access_token,
     create_refresh_token,
-    hash_refresh_token
+    hash_refresh_token,
+    JWT_SECRET
 )
+import jwt
 from src.api.models.user_model import UserModel
 
 
@@ -81,6 +83,29 @@ def refresh():
         "refresh_token": new_refresh
     }), 200
 
-def logout(user_id):
+def logout():
+    # Espera un header Authorization: Bearer <access_token>
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        return jsonify({"error": "Authorization header required"}), 401
+
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return jsonify({"error": "Invalid authorization header format"}), 400
+
+    token = parts[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        return jsonify({"error": "Access token expired"}), 401
+    except jwt.InvalidTokenError as e:
+        print(f"DEBUG JWT: secret='{JWT_SECRET}', error={e}")
+        return jsonify({"error": "Invalid access token"}), 401
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Invalid token payload"}), 400
+
     UserModel.clear_refresh_token(user_id)
+    return jsonify({"message": "Logged out successfully"}), 200
 
