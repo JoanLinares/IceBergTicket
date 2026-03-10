@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Crear cuenta — IBTicket{% endblock %}
+{% block body %}
+<div class="auth-page">
+  <div class="auth-box">
+    <div class="auth-header">
+      <img src="{{ url_for('static', filename='img/logo.png') }}" alt="IBTicket">
+      <h1>IBTicket</h1>
+      <p>Crea tu cuenta</p>
+    </div>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-list">
+      {% for category, message in messages %}
+      <div class="flash flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+    <form class="auth-form" method="POST" action="/register">
+      <div class="input-group">
+        <label for="username">Nombre de usuario</label>
+        <input class="input" type="text" id="username" name="username" required
+               autocomplete="username" placeholder="tu_nombre">
+      </div>
+      <div class="input-group">
+        <label for="email">Correo electrónico</label>
+        <input class="input" type="email" id="email" name="email" required
+               autocomplete="email" placeholder="correo@ejemplo.com">
+      </div>
+      <div class="input-group">
+        <label for="password">Contraseña</label>
+        <input class="input" type="password" id="password" name="password" required
+               minlength="6" autocomplete="new-password" placeholder="••••••••">
+      </div>
+      <button class="btn btn-primary btn-block btn-lg" type="submit">Crear cuenta</button>
+    </form>
+    <div class="auth-footer">
+      ¿Ya tienes cuenta? <a href="/login">Inicia sesión</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

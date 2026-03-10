@@ -1,0 +1,162 @@
+﻿{% extends "layout.html" %}
+{% block title %}Dashboard — IBTicket{% endblock %}
+{% block content %}
+<div class="p-2">
+  <!-- Header -->
+  <div class="dash-header">
+    <h1>Mis bases de datos</h1>
+    <div class="dash-actions">
+      <button class="btn btn-outline" onclick="openModal('joinModal')">🔗 Unirme con código</button>
+      <button class="btn btn-primary" onclick="openModal('uploadModal')">⬆ Subir CSV</button>
+    </div>
+  </div>
+
+  <!-- DB Grid -->
+  {% if files %}
+  <div class="db-grid">
+    {% for f in files %}
+    <a href="/explorer/{{ f.id }}" class="card card-hover db-card" style="text-decoration:none;color:inherit;display:block">
+      <div class="flex justify-between items-center mb-1">
+        <span class="db-name">{{ f.filename }}</span>
+        {% if f.level %}
+        <span class="level-badge level-{{ f.level }}">{{ f.level }}</span>
+        {% endif %}
+      </div>
+      <div class="db-meta">
+        {% if f.is_owner %}
+        <span class="owner-badge">Propietario</span>
+        {% else %}
+        <span class="owner-badge shared-badge">Compartida</span>
+        {% endif %}
+        <span>{{ f.size_fmt }}</span>
+        <span>{{ f.created_at.strftime('%d %b %Y') }}</span>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h3>No tienes bases de datos</h3>
+    <p class="text-dim">Sube un CSV de tickets o únete con un código compartido</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ═══ Upload Modal ═══ -->
+<div class="modal-overlay hidden" id="uploadModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Subir CSV de tickets</h2>
+      <button class="modal-close" onclick="closeModal('uploadModal')">&times;</button>
+    </div>
+    <form method="POST" action="/dashboard/upload" enctype="multipart/form-data" id="uploadForm">
+      <div class="modal-body">
+        <div class="upload-area" id="uploadArea">
+          <div class="upload-icon">📄</div>
+          <p id="uploadLabel">Arrastra tu archivo CSV aquí o haz clic para seleccionar</p>
+          <input type="file" name="file" id="csvInput" accept=".csv">
+        </div>
+        <div id="uploadProgress" class="loading-overlay hidden">
+          <span class="spinner"></span>&nbsp;Clasificando tickets con IA…
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="closeModal('uploadModal')">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="uploadBtn" disabled>Subir y analizar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ═══ Join Modal ═══ -->
+<div class="modal-overlay hidden" id="joinModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Unirme con código</h2>
+      <button class="modal-close" onclick="closeModal('joinModal')">&times;</button>
+    </div>
+    <form method="POST" action="/dashboard/join">
+      <div class="modal-body">
+        <div class="input-group">
+          <label for="shareCodeInput">Código de compartir</label>
+          <input class="input mono" type="text" name="share_code" id="shareCodeInput"
+                 placeholder="A3F9B2C1" maxlength="8" style="text-transform:uppercase">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="closeModal('joinModal')">Cancelar</button>
+        <button type="submit" class="btn btn-primary">Unirme</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ═══ Upload result (shown once after upload) ═══ -->
+{% if upload_result %}
+<div class="modal-overlay" id="resultModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Bases de datos creadas</h2>
+      <button class="modal-close" onclick="closeModal('resultModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      {% for db in upload_result %}
+      <div class="card mb-1">
+        <div class="flex justify-between items-center">
+          <span class="db-name">{{ db.filename }}</span>
+          <span class="level-badge level-{{ db.level }}">{{ db.level }}</span>
+        </div>
+        <p class="text-sm text-dim mt-1">{{ db.n_tickets }} tickets</p>
+        <div class="mt-1">
+          <p class="text-xs text-dim">API Key (guárdala, no se volverá a mostrar):</p>
+          <div class="code-display text-xs" onclick="copyText('{{ db.api_key }}')" title="Haz clic para copiar">{{ db.api_key }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('resultModal')">Aceptar</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+{% block scripts %}
+<script>
+function openModal(id)  { document.getElementById(id).classList.remove('hidden'); }
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+document.querySelectorAll('.modal-overlay').forEach(ov => {
+  ov.addEventListener('click', e => { if (e.target === ov && ov.id !== 'resultModal') closeModal(ov.id); });
+});
+
+/* ── CSV upload ─────────────────────────────────────── */
+const uploadArea = document.getElementById('uploadArea');
+const csvInput   = document.getElementById('csvInput');
+const uploadBtn  = document.getElementById('uploadBtn');
+
+uploadArea.addEventListener('click', () => csvInput.click());
+uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault(); uploadArea.classList.remove('dragover');
+  if (e.dataTransfer.files.length) { csvInput.files = e.dataTransfer.files; onFileSelect(); }
+});
+csvInput.addEventListener('change', onFileSelect);
+
+function onFileSelect() {
+  if (csvInput.files.length) {
+    document.getElementById('uploadLabel').textContent = csvInput.files[0].name;
+    uploadBtn.disabled = false;
+  }
+}
+
+document.getElementById('uploadForm').addEventListener('submit', () => {
+  document.getElementById('uploadProgress').classList.remove('hidden');
+  document.getElementById('uploadArea').style.display = 'none';
+  uploadBtn.disabled = true;
+  uploadBtn.innerHTML = '<span class="spinner"></span>';
+});
+</script>
+{% endblock %}

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block body %}
+<nav class="navbar">
+    <a href="/dashboard" class="nav-brand">
+        <img src="{{ url_for('static', filename='img/logo.png') }}" alt="IBTicket" class="nav-logo">
+        <span>IBTicket</span>
+    </a>
+    <div class="nav-actions">
+        {% if current_user %}
+        <span class="nav-user">{{ current_user }}</span>
+        {% endif %}
+        <form method="POST" action="/logout" style="display:inline">
+            <button class="btn btn-ghost btn-sm" type="submit">Cerrar sesión</button>
+        </form>
+    </div>
+</nav>
+<main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-list">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+</main>
+{% endblock %}
