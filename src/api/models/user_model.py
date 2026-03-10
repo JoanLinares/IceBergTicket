@@ -84,3 +84,13 @@ class UserModel:
         conn.commit()
         cur.close()
         conn.close()
+
+    @staticmethod
+    def get_username_by_id(user_id):
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT username FROM users WHERE id=%s", (user_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row[0] if row else None

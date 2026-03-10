@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}IBTicket{% endblock %}</title>
+    <link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}" type="image/png">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    {% block body %}{% endblock %}
+    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

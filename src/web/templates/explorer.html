@@ -1,0 +1,421 @@
+﻿{% extends "layout.html" %}
+{% block title %}{{ file.filename }} — IBTicket{% endblock %}
+{% block content %}
+<div class="explorer" id="explorerRoot"
+  data-file-id="{{ file.id }}"
+  data-initial-table="{{ initial_table or '' }}"
+  data-initial-page="{{ initial_data.page if initial_data else 1 }}">
+
+  <!-- ═══ Sidebar ═══ -->
+  <aside class="explorer-sidebar">
+    <div class="sidebar-header">
+      <span>{{ file.level or 'DB' }}</span>
+      <a href="/dashboard" class="sidebar-back">← Volver</a>
+    </div>
+    {% if tables %}
+    <ul class="table-list">
+      {% for t in tables %}
+      <li class="table-item {% if t.name == initial_table %}active{% endif %}"
+          data-name="{{ t.name }}" onclick="selectTable('{{ t.name }}')">
+        <span>{{ t.name }} <span class="table-type-label">{{ t.type }}</span></span>
+        <span class="row-count">{{ t.row_count }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-dim text-sm p-1">Sin tablas</p>
+    {% endif %}
+  </aside>
+
+  <!-- ═══ Main area ═══ -->
+  <section class="explorer-main">
+    <!-- Tabs -->
+    <div class="explorer-tabs">
+      <button class="explorer-tab active" data-tab="data"     onclick="switchTab('data')">📊 Datos</button>
+      <button class="explorer-tab"        data-tab="query"    onclick="switchTab('query')">⌨ Query</button>
+      <button class="explorer-tab"        data-tab="history"  onclick="switchTab('history')">📋 Historial</button>
+      <button class="explorer-tab"        data-tab="settings" onclick="switchTab('settings')">⚙ Configuración</button>
+    </div>
+
+    <!-- ═══ Data tab ═══ -->
+    <div class="tab-panel active" id="panel-data">
+      <div id="dataPlaceholder" class="loading-overlay {% if initial_data %}hidden{% endif %}">
+        {% if not tables %}Sin tablas disponibles{% else %}Cargando…{% endif %}
+      </div>
+      <div id="dataContent" {% if not initial_data %}style="display:none"{% endif %} style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead id="dataHead">
+              {% if initial_data %}
+              <tr>{% for col in initial_data.columns %}<th>{{ col }}</th>{% endfor %}</tr>
+              {% endif %}
+            </thead>
+            <tbody id="dataBody">
+              {% if initial_data %}
+              {% for row in initial_data.rows %}
+              <tr>
+                {% for col in initial_data.columns %}
+                {% set v = row[col] %}
+                {% if v is none %}<td class="null-val">NULL</td>
+                {% else %}<td>{{ v }}</td>{% endif %}
+                {% endfor %}
+              </tr>
+              {% endfor %}
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination" id="dataPagination">
+          <span id="pageInfo">
+            {% if initial_data %}
+            Página {{ initial_data.page }} de {{ initial_data.total_pages }} ({{ initial_data.total }} filas)
+            {% endif %}
+          </span>
+          <div class="pagination-btns">
+            <button class="btn btn-outline btn-sm" id="prevBtn"
+                    {% if not initial_data or initial_data.page <= 1 %}disabled{% endif %}
+                    onclick="changePage(-1)">← Anterior</button>
+            <button class="btn btn-outline btn-sm" id="nextBtn"
+                    {% if not initial_data or initial_data.page >= initial_data.total_pages %}disabled{% endif %}
+                    onclick="changePage(1)">Siguiente →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Query tab ═══ -->
+    <div class="tab-panel" id="panel-query">
+      <div class="query-section">
+        <div class="query-editor-wrap">
+          <textarea class="textarea" id="sqlInput" rows="5"
+                    placeholder="SELECT * FROM fact_tickets LIMIT 100"></textarea>
+          <div class="query-toolbar">
+            <div class="flex gap-md items-center">
+              <button class="btn btn-primary btn-sm" id="runQueryBtn" onclick="runQuery()">▶ Ejecutar</button>
+              <button class="btn btn-outline btn-sm" onclick="openSaveModal()">💾 Guardar</button>
+            </div>
+            <span id="queryStatus" class="text-sm text-dim"></span>
+          </div>
+        </div>
+        <div class="query-results" id="queryResults">
+          <div class="loading-overlay text-dim">Escribe una query y pulsa Ejecutar (Ctrl+Enter)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ History tab ═══ -->
+    <div class="tab-panel" id="panel-history" style="overflow:auto">
+      <div id="historyLoading" class="loading-overlay hidden"><span class="spinner"></span></div>
+      <div id="historyEmpty"   class="loading-overlay text-dim hidden">No hay queries guardadas</div>
+      <div class="history-list" id="historyList"></div>
+    </div>
+
+    <!-- ═══ Settings tab ═══ -->
+    <div class="tab-panel" id="panel-settings" style="overflow:auto">
+      <div class="settings-grid">
+
+        <!-- Share code -->
+        <div class="settings-section">
+          <h3>🔗 Código de compartir</h3>
+          <p class="text-sm text-dim mb-1">Comparte este código con otros usuarios para que accedan a esta base de datos.</p>
+          <div class="copy-group">
+            <input class="input mono" id="shareCodeDisplay" readonly
+                   value="{{ file.share_code }}" placeholder="Sin código">
+            <button class="btn btn-outline btn-sm" onclick="copyText(document.getElementById('shareCodeDisplay').value)">Copiar</button>
+            <button class="btn btn-primary btn-sm" onclick="generateShareCode()">
+              {% if file.has_share_code %}Regenerar{% else %}Generar{% endif %}
+            </button>
+          </div>
+        </div>
+
+        {% if file.is_owner %}
+        <!-- API Key -->
+        <div class="settings-section">
+          <h3>🔑 API Key de Ingest</h3>
+          <p class="text-sm text-dim mb-1">Usa esta clave para enviar tickets desde sistemas externos.</p>
+          <div class="copy-group mb-1">
+            <input class="input mono" id="apiKeyDisplay" readonly placeholder="Haz clic en Regenerar para obtener una nueva clave">
+            <button class="btn btn-outline btn-sm" onclick="copyText(document.getElementById('apiKeyDisplay').value)">Copiar</button>
+            <button class="btn btn-danger btn-sm" onclick="regenerateApiKey()">Regenerar</button>
+          </div>
+          <div>
+            <label class="text-xs text-dim">URL de Ingest</label>
+            <div class="code-display text-xs" id="ingestUrlDisplay">—</div>
+          </div>
+        </div>
+
+        <!-- Delete -->
+        <div class="settings-section">
+          <h3>🗑 Zona peligrosa</h3>
+          <p class="text-sm text-dim mb-1">Eliminar esta base de datos es irreversible.</p>
+          <button class="btn btn-danger btn-sm" onclick="openModal('deleteModal')">Eliminar base de datos</button>
+        </div>
+        {% endif %}
+
+        <!-- Info -->
+        <div class="settings-section">
+          <h3>ℹ Info</h3>
+          <p class="text-sm text-dim">Nombre: <strong class="text-dim">{{ file.filename }}</strong></p>
+          <p class="text-sm text-dim">Tamaño: <strong class="text-dim">{{ file.size_fmt }}</strong></p>
+          <p class="text-sm text-dim">Creado: <strong class="text-dim">{{ file.created_at.strftime('%d %b %Y') }}</strong></p>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</div>
+
+<!-- ═══ Save Query Modal ═══ -->
+<div class="modal-overlay hidden" id="saveModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Guardar query</h2>
+      <button class="modal-close" onclick="closeModal('saveModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="input-group">
+        <label for="queryNameInput">Nombre</label>
+        <input class="input" id="queryNameInput" placeholder="Tickets de alta prioridad">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('saveModal')">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveCurrentQuery()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Confirm Delete Modal ═══ -->
+<div class="modal-overlay hidden" id="deleteModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>¿Eliminar base de datos?</h2>
+      <button class="modal-close" onclick="closeModal('deleteModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p>Esta acción es <strong>irreversible</strong>. Se eliminará todo el contenido y acceso compartido.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('deleteModal')">Cancelar</button>
+      <form method="POST" action="/explorer/{{ file.id }}/delete" style="display:inline">
+        <button type="submit" class="btn btn-danger">Sí, eliminar</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+/* ── Constants (from Jinja2) ────────────────────────── */
+const explorerRoot = document.getElementById('explorerRoot');
+const FILE_ID = Number(explorerRoot?.dataset.fileId || 0);
+let currentTable = explorerRoot?.dataset.initialTable || '';
+let currentPage  = Number(explorerRoot?.dataset.initialPage || 1);
+
+/* ── Modals ─────────────────────────────────────────── */
+function openModal(id)  { document.getElementById(id).classList.remove('hidden'); }
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+document.querySelectorAll('.modal-overlay').forEach(ov => {
+  ov.addEventListener('click', e => { if (e.target === ov) closeModal(ov.id); });
+});
+
+/* ── Tabs ─────────────────────────────────────────── */
+function switchTab(tab) {
+  document.querySelectorAll('.explorer-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'panel-' + tab);
+  });
+  if (tab === 'history') loadHistory();
+}
+
+/* ── Table selection ────────────────────────────────── */
+function selectTable(name) {
+  currentTable = name;
+  currentPage  = 1;
+  document.querySelectorAll('.table-item').forEach(i => i.classList.toggle('active', i.dataset.name === name));
+  switchTab('data');
+  loadTableData();
+}
+
+/* ── Load table data (AJAX) ─────────────────────────── */
+async function loadTableData() {
+  const ph      = document.getElementById('dataPlaceholder');
+  const content = document.getElementById('dataContent');
+  ph.innerHTML  = '<span class="spinner"></span> Cargando…';
+  ph.classList.remove('hidden');
+  content.style.display = 'none';
+
+  try {
+    const data = await doGET(`/explorer/${FILE_ID}/table/${currentTable}?page=${currentPage}&per_page=50`);
+    renderTable(data);
+    ph.classList.add('hidden');
+    content.style.display = 'flex';
+  } catch (err) {
+    ph.innerHTML = `<span class="text-dim">Error: ${esc(err.message)}</span>`;
+    showToast(err.message, 'error');
+  }
+}
+
+function renderTable(data) {
+  document.getElementById('dataHead').innerHTML =
+    '<tr>' + data.columns.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>';
+  document.getElementById('dataBody').innerHTML =
+    data.rows.map(row =>
+      '<tr>' + data.columns.map(c => {
+        const v = row[c];
+        return v === null ? '<td class="null-val">NULL</td>' : `<td>${esc(v)}</td>`;
+      }).join('') + '</tr>'
+    ).join('');
+  document.getElementById('pageInfo').textContent =
+    `Página ${data.page} de ${data.total_pages} (${data.total} filas)`;
+  document.getElementById('prevBtn').disabled = data.page <= 1;
+  document.getElementById('nextBtn').disabled = data.page >= data.total_pages;
+  currentPage = data.page;
+}
+
+function changePage(delta) {
+  currentPage += delta;
+  loadTableData();
+}
+
+/* ── Query execution (AJAX) ─────────────────────────── */
+async function runQuery() {
+  const sql     = document.getElementById('sqlInput').value.trim();
+  if (!sql) return showToast('Escribe una query', 'error');
+  const btn     = document.getElementById('runQueryBtn');
+  const status  = document.getElementById('queryStatus');
+  const results = document.getElementById('queryResults');
+
+  btn.disabled     = true;
+  status.textContent = 'Ejecutando…';
+  results.innerHTML  = '<div class="loading-overlay"><span class="spinner"></span></div>';
+
+  const t0 = performance.now();
+  try {
+    const data    = await doPOST(`/explorer/${FILE_ID}/query`, { sql });
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+    if (data.columns && data.columns.length) {
+      let html = '<div class="data-table-wrap"><table class="data-table"><thead><tr>';
+      html += data.columns.map(c => `<th>${esc(c)}</th>`).join('');
+      html += '</tr></thead><tbody>';
+      html += (data.rows || []).map(row =>
+        '<tr>' + data.columns.map(c => {
+          const v = row[c];
+          return v === null ? '<td class="null-val">NULL</td>' : `<td>${esc(v)}</td>`;
+        }).join('') + '</tr>'
+      ).join('');
+      html += '</tbody></table></div>';
+      results.innerHTML = html;
+    } else {
+      results.innerHTML = `<div class="loading-overlay text-dim">Query ejecutada. Filas afectadas: ${data.affected_rows ?? 0}</div>`;
+    }
+
+    status.textContent = `${data.row_count ?? 0} filas · ${elapsed}s`;
+  } catch (err) {
+    results.innerHTML  = `<div class="query-error">${esc(err.message)}</div>`;
+    status.textContent = 'Error';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('sqlInput').addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runQuery(); }
+});
+
+/* ── Save query ─────────────────────────────────────── */
+function openSaveModal() {
+  if (!document.getElementById('sqlInput').value.trim()) return showToast('Escribe una query primero', 'error');
+  openModal('saveModal');
+}
+
+async function saveCurrentQuery() {
+  const name = document.getElementById('queryNameInput').value.trim();
+  const sql  = document.getElementById('sqlInput').value.trim();
+  if (!name) return showToast('Introduce un nombre', 'error');
+  try {
+    await doPOST(`/explorer/${FILE_ID}/queries`, { name, sql });
+    showToast('Query guardada', 'success');
+    closeModal('saveModal');
+    document.getElementById('queryNameInput').value = '';
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+/* ── History (AJAX) ──────────────────────────────────── */
+async function loadHistory() {
+  const list    = document.getElementById('historyList');
+  const loading = document.getElementById('historyLoading');
+  const empty   = document.getElementById('historyEmpty');
+
+  loading.classList.remove('hidden');
+  empty.classList.add('hidden');
+  list.innerHTML = '';
+
+  try {
+    const queries = await doGET(`/explorer/${FILE_ID}/queries`);
+    loading.classList.add('hidden');
+    if (!queries.length) { empty.classList.remove('hidden'); return; }
+
+    queries.forEach(q => {
+      const sql = q.query_json?.sql || '—';
+      const div = document.createElement('div');
+      div.className = 'history-item';
+      div.innerHTML = `
+        <div class="flex justify-between items-center">
+          <strong class="text-sm">${esc(q.name)}</strong>
+          <div class="flex gap-sm">
+            <button class="btn btn-ghost btn-sm" title="Cargar en editor"
+                    onclick="loadInEditor(${JSON.stringify(sql)})">⌨</button>
+            <button class="btn btn-ghost btn-sm" title="Eliminar"
+                    onclick="deleteQuery(${q.id}, this)">🗑</button>
+          </div>
+        </div>
+        <div class="history-sql">${esc(sql)}</div>
+        <div class="history-meta"><span>${new Date(q.created_at).toLocaleString('es-ES')}</span></div>
+      `;
+      list.appendChild(div);
+    });
+  } catch (err) {
+    loading.classList.add('hidden');
+    showToast(err.message, 'error');
+  }
+}
+
+function loadInEditor(sql) {
+  document.getElementById('sqlInput').value = sql;
+  switchTab('query');
+}
+
+async function deleteQuery(qid, btn) {
+  btn.disabled = true;
+  try {
+    await doDELETE(`/explorer/${FILE_ID}/queries/${qid}`);
+    btn.closest('.history-item').remove();
+    showToast('Query eliminada', 'success');
+    if (!document.getElementById('historyList').children.length)
+      document.getElementById('historyEmpty').classList.remove('hidden');
+  } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+}
+
+/* ── Settings ────────────────────────────────────────── */
+async function generateShareCode() {
+  const existing = document.getElementById('shareCodeDisplay').value;
+  try {
+    const res = await doPOST(`/explorer/${FILE_ID}/share`, { regenerate: !!existing });
+    document.getElementById('shareCodeDisplay').value = res.share_code;
+    showToast('Código generado', 'success');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function regenerateApiKey() {
+  try {
+    const res = await doPOST(`/explorer/${FILE_ID}/api-key`, {});
+    document.getElementById('apiKeyDisplay').value = res.api_key;
+    document.getElementById('ingestUrlDisplay').textContent = window.location.origin + res.ingest_url;
+    showToast('¡API Key regenerada! Guárdala.', 'warning');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+</script>
+{% endblock %}

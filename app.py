@@ -17,13 +17,20 @@ app = Flask(
 )
 
 app.config['DATABASE_URL'] = DATABASE_URL
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-change-in-production')
+
+
+@app.context_processor
+def inject_user():
+    from flask import session
+    return {'current_user': session.get('username', '')}
 
 
 # CORS
 @app.after_request
 def cors(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     return response
 
