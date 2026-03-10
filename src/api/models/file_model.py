@@ -4,16 +4,19 @@ from src.models.DB import get_db
 class FileModel:
 
     @staticmethod
-    def create(owner_user_id, filename, file_type, storage_path, size_bytes, sha256, enc_nonce):
+    def create(owner_user_id, filename, file_type, storage_path,
+               size_bytes, sha256, enc_nonce, api_password_hash=None):
         """Inserta un registro en public.files y devuelve (id, created_at)."""
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO files
-                (owner_user_id, filename, file_type, storage_path, size_bytes, sha256, enc_nonce)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (owner_user_id, filename, file_type, storage_path,
+                 size_bytes, sha256, enc_nonce, api_password_hash)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at
-        """, (owner_user_id, filename, file_type, storage_path, size_bytes, sha256, enc_nonce))
+        """, (owner_user_id, filename, file_type, storage_path,
+               size_bytes, sha256, enc_nonce, api_password_hash))
         row = cur.fetchone()
         conn.commit()
         cur.close()
@@ -145,6 +148,78 @@ class FileModel:
             "SELECT id, owner_user_id, filename, status FROM files WHERE share_code = %s",
             (code.strip().upper(),)
         )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row
+
+    @staticmethod
+    def get_full_with_access(file_id: int, user_id: int):
+        """
+        Devuelve el registro completo del archivo + is_owner si el usuario tiene acceso.
+        Índices: id(0) owner_user_id(1) filename(2) file_type(3) storage_path(4)
+                 size_bytes(5) sha256(6) status(7) created_at(8)
+                 is_encrypted(9) enc_version(10) enc_nonce(11) is_owner(12)
+        """
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT f.id, f.owner_user_id, f.filename, f.file_type, f.storage_path,
+                   f.size_bytes, f.sha256, f.status, f.created_at,
+                   f.is_encrypted, f.enc_version, f.enc_nonce,
+                   uf.is_owner
+            FROM files f
+            JOIN user_files uf ON uf.file_id = f.id
+            WHERE f.id = %s AND uf.user_id = %s
+        """, (file_id, user_id))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row
+
+    @staticmethod
+    def update_encryption_meta(file_id: int, sha256: str, enc_nonce: str, size_bytes: int):
+        """Actualiza sha256, enc_nonce y size_bytes tras un re-cifrado (escritura + re-subida)."""
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE files SET sha256 = %s, enc_nonce = %s, size_bytes = %s
+            WHERE id = %s
+        """, (sha256, enc_nonce, size_bytes, file_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    @staticmethod
+    def set_api_password_hash(file_id: int, owner_user_id: int, pw_hash: str) -> bool:
+        """Almacena o regenera el hash de la API key (solo propietario)."""
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("""
+            UPDATE files SET api_password_hash = %s
+            WHERE id = %s AND owner_user_id = %s
+            RETURNING id
+        """, (pw_hash, file_id, owner_user_id))
+        updated = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return updated is not None
+
+    @staticmethod
+    def get_api_password_hash(file_id: int):
+        """
+        Devuelve (id, owner_user_id, filename, api_password_hash, storage_path, enc_nonce)
+        sin requerir autenticación JWT (usado por el endpoint de ingest).
+        """
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("""
+            SELECT id, owner_user_id, filename, api_password_hash,
+                   storage_path, enc_nonce, status
+            FROM files
+            WHERE id = %s
+        """, (file_id,))
         row = cur.fetchone()
         cur.close()
         conn.close()

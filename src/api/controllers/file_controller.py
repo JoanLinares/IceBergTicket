@@ -2,6 +2,7 @@ import re
 import secrets
 
 from flask import request, jsonify, g
+from werkzeug.security import generate_password_hash
 
 from src.api.middlewares.jwt_required import jwt_required
 from src.api.models.file_model import FileModel, UserFileModel
@@ -79,6 +80,10 @@ def upload_file():
         except RuntimeError as exc:
             return jsonify({"error": f"Error subiendo {level}: {exc}"}), 502
 
+        # Generar API key — se devuelve en texto plano solo esta vez
+        plain_api_key = secrets.token_urlsafe(32)
+        api_pw_hash   = generate_password_hash(plain_api_key)
+
         file_id, created_at = FileModel.create(
             owner_user_id=g.user_id,
             filename=meta["filename"],
@@ -87,6 +92,7 @@ def upload_file():
             size_bytes=meta["size_bytes"],
             sha256=meta["sha256"],
             enc_nonce=meta["enc_nonce"],
+            api_password_hash=api_pw_hash,
         )
         UserFileModel.create(user_id=g.user_id, file_id=file_id, is_owner=True)
 
@@ -100,6 +106,8 @@ def upload_file():
             "is_encrypted": True,
             "enc_version":  "aes-256-gcm-v1",
             "created_at":   created_at.isoformat(),
+            "api_key":      plain_api_key,
+            "ingest_url":   f"/api/v1/ingest/{file_id}/{plain_api_key}",
         })
 
     return jsonify(created), 201
@@ -227,6 +235,35 @@ def join_database():
         "file_id":  file_id,
         "filename": filename,
         "level":    _extract_level(filename),
+    }), 200
+
+
+@jwt_required
+def regenerate_api_key(file_id: int):
+    """
+    POST /files/<file_id>/api-key
+    Regenera la API key de ingest (solo propietario).
+    La clave anterior queda invalidada inmediatamente.
+    Devuelve la nueva clave en texto plano UNA SOLA VEZ.
+    """
+    row = FileModel.check_user_access(file_id, g.user_id)
+    if not row:
+        return jsonify({"error": "Base de datos no encontrada"}), 404
+    if not row[9]:  # is_owner
+        return jsonify({"error": "Solo el propietario puede regenerar la API key"}), 403
+
+    plain_key = secrets.token_urlsafe(32)
+    pw_hash   = generate_password_hash(plain_key)
+
+    ok = FileModel.set_api_password_hash(file_id, g.user_id, pw_hash)
+    if not ok:
+        return jsonify({"error": "No se pudo actualizar la API key"}), 500
+
+    return jsonify({
+        "file_id":    file_id,
+        "api_key":    plain_key,
+        "ingest_url": f"/api/v1/ingest/{file_id}/{plain_key}",
+        "warning":    "Guarda esta clave, no se volverá a mostrar.",
     }), 200
 
 

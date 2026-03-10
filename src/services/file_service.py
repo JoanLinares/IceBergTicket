@@ -72,7 +72,7 @@ class FileService:
         }
 
     @staticmethod
-    def _upload_to_supabase(storage_path: str, data: bytes):
+    def _upload_to_supabase(storage_path: str, data: bytes, upsert: bool = False):
         """POST de bytes al bucket de Supabase Storage."""
         if not SUPABASE_URL or not SUPABASE_KEY:
             raise RuntimeError("SUPABASE_URL o SUPABASE_SERVICE_KEY no configurados")
@@ -81,11 +81,55 @@ class FileService:
         headers = {
             "Authorization":  f"Bearer {SUPABASE_KEY}",
             "Content-Type":   "application/octet-stream",
-            "x-upsert":       "false",
+            "x-upsert":       "true" if upsert else "false",
         }
         resp = requests.post(url, data=data, headers=headers, timeout=60)
         if resp.status_code not in (200, 201):
             raise RuntimeError(f"Supabase Storage error {resp.status_code}: {resp.text}")
+
+    @staticmethod
+    def download_from_storage(storage_path: str) -> bytes:
+        """Descarga el blob cifrado desde Supabase Storage y devuelve sus bytes."""
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            raise RuntimeError("SUPABASE_URL o SUPABASE_SERVICE_KEY no configurados")
+        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{storage_path}"
+        headers = {"Authorization": f"Bearer {SUPABASE_KEY}"}
+        resp = requests.get(url, headers=headers, timeout=60)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Supabase Storage error {resp.status_code}: {resp.text}")
+        return resp.content
+
+    @staticmethod
+    def decrypt(encrypted_bytes: bytes, nonce_b64: str) -> bytes:
+        """Descifra bytes con AES-256-GCM usando el nonce en base64."""
+        key   = FileService._get_master_key()
+        nonce = base64.b64decode(nonce_b64)
+        return AESGCM(key).decrypt(nonce, encrypted_bytes, None)
+
+    @staticmethod
+    def upload_overwrite(file_bytes: bytes, storage_path: str) -> dict:
+        """
+        Re-cifra file_bytes y sobreescribe el objeto existente en Supabase Storage.
+        Returns dict con size_bytes, sha256, enc_nonce.
+        """
+        if len(file_bytes) > MAX_FILE_SIZE:
+            raise ValueError(f"El archivo supera el tamaño máximo ({MAX_FILE_SIZE // (1024*1024)} MB)")
+
+        sha256     = hashlib.sha256(file_bytes).hexdigest()
+        size_bytes = len(file_bytes)
+
+        key       = FileService._get_master_key()
+        nonce     = os.urandom(12)
+        encrypted = AESGCM(key).encrypt(nonce, file_bytes, None)
+        enc_nonce_b64 = base64.b64encode(nonce).decode()
+
+        FileService._upload_to_supabase(storage_path, encrypted, upsert=True)
+
+        return {
+            "size_bytes": size_bytes,
+            "sha256":     sha256,
+            "enc_nonce":  enc_nonce_b64,
+        }
 
     @staticmethod
     def delete_from_storage(storage_path: str):
