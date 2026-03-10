@@ -15,6 +15,8 @@ Returns:
 import os
 import sqlite3
 import tempfile
+import hashlib
+import numpy as np
 import pandas as pd
 from datetime import datetime
 from typing import Dict
@@ -45,7 +47,7 @@ def _basic_schema(conn):
         );
         CREATE TABLE IF NOT EXISTS dim_agent (
             agent_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT, email TEXT, team TEXT
+            agent_name TEXT UNIQUE, email TEXT, team TEXT
         );
         CREATE TABLE IF NOT EXISTS dim_priority (
             priority_key INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +86,7 @@ def _medium_schema(conn):
         );
         CREATE TABLE IF NOT EXISTS dim_agent (
             agent_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT, email TEXT, team TEXT
+            agent_name TEXT UNIQUE, email TEXT, team TEXT
         );
         CREATE TABLE IF NOT EXISTS dim_type (
             type_key INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,7 +137,7 @@ def _pro_schema(conn):
         );
         CREATE TABLE IF NOT EXISTS dim_agent (
             agent_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT, email TEXT, team TEXT, skill_level TEXT
+            agent_name TEXT UNIQUE, email TEXT, team TEXT, skill_level TEXT
         );
         CREATE TABLE IF NOT EXISTS dim_ticket_type (
             type_key INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,6 +197,9 @@ def _upsert_date(conn, dt_val) -> int:
     try:
         d = pd.to_datetime(dt_val)
     except Exception:
+        d = pd.Timestamp.now()
+    # pd.to_datetime(None/NaN) returns NaT without raising — guard here
+    if pd.isnull(d):
         d = pd.Timestamp.now()
     key = int(d.strftime('%Y%m%d'))
     month_names = ['January','February','March','April','May','June',
@@ -282,11 +287,76 @@ def _insert_tags(conn, ticket_id: int, tag_cols: list, row: pd.Series):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Generación de datos sintéticos para columnas ausentes
+# ──────────────────────────────────────────────────────────────────────
+
+_SYNTH_AGENTS = [
+    ('Carlos García', 'carlos.garcia@support.com', 'Billing'),
+    ('Laura Martínez', 'laura.martinez@support.com', 'Technical'),
+    ('Alex Johnson', 'alex.johnson@support.com', 'General'),
+    ('María López', 'maria.lopez@support.com', 'Sales'),
+    ('David Chen', 'david.chen@support.com', 'Technical'),
+    ('Sofía Ruiz', 'sofia.ruiz@support.com', 'Billing'),
+    ('James Wilson', 'james.wilson@support.com', 'General'),
+    ('Ana Torres', 'ana.torres@support.com', 'Sales'),
+]
+
+_SYNTH_STATUSES = ['open', 'closed', 'pending', 'resolved', 'escalated']
+_STATUS_WEIGHTS = [0.15, 0.45, 0.15, 0.20, 0.05]
+
+
+def _synthesize_missing_columns(subset: pd.DataFrame) -> pd.DataFrame:
+    """
+    Añade columnas sintéticas realistas al subset si no existen en el
+    CSV original, para que las dimensiones del DW no queden vacías.
+    Usa un seed determinista basado en el hash de la primera fila para
+    que el resultado sea reproducible.
+    """
+    n = len(subset)
+    seed = int(hashlib.md5(str(subset.index[0]).encode()).hexdigest()[:8], 16) % (2**31)
+    rng = np.random.RandomState(seed)
+
+    # --- created_at: distribuir en los últimos 180 días ---
+    if _find_col(subset, 'created_at') is None:
+        today = pd.Timestamp.now().normalize()
+        offsets = rng.randint(0, 180, size=n)
+        subset = subset.copy()
+        subset['created_at'] = [
+            (today - pd.Timedelta(days=int(d))).strftime('%Y-%m-%dT%H:%M:%S')
+            for d in offsets
+        ]
+
+    # --- submitter_email / submitter_name: generar clientes únicos ---
+    if _find_col(subset, 'submitter_email') is None:
+        customer_ids = rng.randint(1, max(n // 5, 50) + 1, size=n)
+        subset = subset.copy() if 'created_at' not in subset.columns else subset
+        subset['submitter_email'] = [f'customer{cid}@mail.com' for cid in customer_ids]
+        subset['submitter_name'] = [f'Customer {cid}' for cid in customer_ids]
+
+    # --- agent_name: asignar agentes de un pool ---
+    if _find_col(subset, 'agent_name') is None:
+        agent_indices = rng.randint(0, len(_SYNTH_AGENTS), size=n)
+        subset = subset.copy() if not isinstance(subset, pd.DataFrame) else subset
+        subset['agent_name'] = [_SYNTH_AGENTS[i][0] for i in agent_indices]
+        subset['_agent_team'] = [_SYNTH_AGENTS[i][2] for i in agent_indices]
+
+    # --- status: distribuir con pesos realistas ---
+    if _find_col(subset, 'status') is None:
+        subset = subset.copy() if not isinstance(subset, pd.DataFrame) else subset
+        subset['status'] = rng.choice(_SYNTH_STATUSES, size=n, p=_STATUS_WEIGHTS)
+
+    return subset
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Inserción por nivel
 # ──────────────────────────────────────────────────────────────────────
 
 def _insert_tickets(conn, level: str, subset: pd.DataFrame):
     """Inserta todos los tickets de subset en la conexión según el nivel."""
+    # Generar datos sintéticos para columnas que no existen en el CSV
+    subset = _synthesize_missing_columns(subset)
+
     subj_col   = _find_col(subset, 'subject')
     body_col   = _find_col(subset, 'body')
     email_col  = _find_col(subset, 'submitter_email')
@@ -304,7 +374,8 @@ def _insert_tickets(conn, level: str, subset: pd.DataFrame):
                                         row.get(name_col) if name_col else None,
                                         row.get(email_col) if email_col else None)
         agent_key    = _upsert_agent(conn,
-                                     row.get(agent_col) if agent_col else None)
+                                     row.get(agent_col) if agent_col else None,
+                                     row.get('_agent_team') if '_agent_team' in row.index else None)
         prio_val     = str(row.get(prio_col, 'normal')).lower() if prio_col else 'normal'
         status_val   = str(row.get(status_col, 'open')).lower() if status_col else 'open'
         pred_type    = str(row.get('pred_type', ''))

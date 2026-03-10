@@ -85,15 +85,13 @@ class MLService:
         df = pd.read_csv(io.BytesIO(csv_bytes))
         X  = self._build_features(df)
 
+        # Models were trained with string labels (y_type, y_language, y_snowflake
+        # are raw string arrays), so predict() already returns strings directly.
+        # label_encoders only encodes INPUT features (queue/priority/language),
+        # it is NOT used to decode model output predictions.
         pred_type = self.model_type.predict(X)
         pred_lang = self.model_language.predict(X)
         pred_snow = self.model_snowflake.predict(X)
-
-        # Decodificar etiquetas
-        le = self.label_encoders
-        if 'type'      in le: pred_type = le['type'].inverse_transform(pred_type)
-        if 'language'  in le: pred_lang = le['language'].inverse_transform(pred_lang)
-        if 'snowflake' in le: pred_snow = le['snowflake'].inverse_transform(pred_snow)
 
         out = df.copy()
         out['pred_type']     = pred_type

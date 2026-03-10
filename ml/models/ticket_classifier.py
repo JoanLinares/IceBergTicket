@@ -159,13 +159,11 @@ class TicketClassifier:
         snowflake_pred = self.model_snowflake.predict(X_scaled)[0]
 
         # Decodificar etiquetas numéricas → strings
+        # label_encoders only has input feature encoders (queue/priority/language),
+        # NOT output class decoders. Models trained with string labels output
+        # strings directly, so no inverse_transform is needed or correct here.
         if self.label_encoders:
-            if 'type' in self.label_encoders:
-                type_pred = self.label_encoders['type'].inverse_transform([type_pred])[0]
-            if 'language' in self.label_encoders:
-                language_pred = self.label_encoders['language'].inverse_transform([language_pred])[0]
-            if 'snowflake' in self.label_encoders:
-                snowflake_pred = self.label_encoders['snowflake'].inverse_transform([snowflake_pred])[0]
+            pass  # intentionally left; models return strings directly
 
         return {
             'type':            str(type_pred),

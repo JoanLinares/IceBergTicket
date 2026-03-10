@@ -8,7 +8,7 @@ from flask import Flask
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 app = Flask(
     __name__,
