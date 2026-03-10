@@ -40,12 +40,15 @@ MODEL_CONFIG = {
         'n_jobs': -1
     },
     
-    # SVM
-    'svm': {
-        'kernel': 'linear',
+    # LinearSVC (misma matemática que SVM lineal, 10-100x más rápido)
+    'linear_svc': {
+        'dual': 'auto',
         'class_weight': 'balanced',
         'random_state': 42
     },
+
+    # Naive Bayes (detección de idioma)
+    'naive_bayes': {},
     
     # Train/Test split
     'train_test_split': {
@@ -101,11 +104,31 @@ LANGUAGE_MAP = {
     'unknown': 'Desconocido'
 }
 
+# Qué modelo maneja cada tarea (debe coincidir con los .pkl guardados)
+TASK_MODELS = {
+    'type':      'Random Forest',
+    'language':  'Naive Bayes',
+    'snowflake': 'Gradient Boosting',
+}
+
+# Nombres fijos de los artefactos guardados en model_artifacts/
+SAVED_MODEL_FILES = {
+    'type':           'model_type_random_forest.pkl',
+    'language':       'model_language_naive_bayes.pkl',
+    'snowflake':      'model_snowflake_gradient_boosting.pkl',
+    'scaler':         'scaler.pkl',
+    'label_encoders': 'label_encoders.pkl',
+    'tfidf':          'tfidf_vectorizer.pkl',
+    'metadata':       'model_metadata.pkl',
+}
+
 # Paths
 PATHS = {
-    'data_dir': '../data',
-    'raw_data': '../data/raw',
-    'processed_data': '../data/processed',
+    'data_dir':        '../data',
+    'raw_data':        '../data/raw',
+    'processed_data':  '../data/processed',
     'model_artifacts': '../model_artifacts',
-    'schemas': '..'
+    'db_basic':        '../model_artifacts/basic_dw.db',
+    'db_medium':       '../model_artifacts/medium_dw.db',
+    'db_pro':          '../model_artifacts/pro_dw.db',
 }

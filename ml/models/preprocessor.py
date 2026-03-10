@@ -10,26 +10,37 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from typing import Dict, List, Any, Tuple
 
+try:
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    from config.model_config import MODEL_CONFIG as _MC
+    _tfidf_cfg = _MC.get('tfidf', {})
+except ImportError:
+    _tfidf_cfg = {}
+
 
 class TicketPreprocessor:
     """
-    Preprocessor for ticket data
-    
+    Preprocessor for ticket data.
+
     Handles:
     - Text vectorization (TF-IDF)
     - Categorical encoding
     - Feature scaling
     - Missing value imputation
+
+    Los parámetros del TF-IDF se leen de model_config.MODEL_CONFIG['tfidf']
+    para mantener coherencia con el entrenamiento.
     """
-    
+
     def __init__(self):
-        """Initialize preprocessor with default settings"""
+        """Initialize preprocessor with settings from model_config."""
         self.tfidf = TfidfVectorizer(
-            max_features=100,
-            min_df=2,
-            max_df=0.8,
-            ngram_range=(1, 2),
-            stop_words='english'
+            max_features=_tfidf_cfg.get('max_features', 100),
+            min_df=_tfidf_cfg.get('min_df', 2),
+            max_df=_tfidf_cfg.get('max_df', 0.8),
+            ngram_range=tuple(_tfidf_cfg.get('ngram_range', (1, 2))),
+            stop_words=_tfidf_cfg.get('stop_words', 'english'),
         )
         
         self.label_encoders = {}

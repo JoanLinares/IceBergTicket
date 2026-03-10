@@ -1,10 +1,19 @@
 """
 Ticket Classifier Module
 
-Multi-objective classifier that predicts:
-1. Ticket type (Incident/Request/Problem)
-2. Language (en/es/de/fr/pt)
-3. Snowflake DW level (BASIC/MEDIUM/PRO)
+Multi-objetivo: predice tres tareas simultáneamente:
+1. Tipo de ticket  (Incident / Request / Problem)   → Random Forest
+2. Idioma          (en / es / de / fr / pt)          → Naive Bayes
+3. Nivel Snowflake (BASIC / MEDIUM / PRO)            → Gradient Boosting
+
+Artefactos esperados en model_artifacts/:
+  model_type_random_forest.pkl
+  model_language_naive_bayes.pkl
+  model_snowflake_gradient_boosting.pkl
+  scaler.pkl
+  label_encoders.pkl
+  tfidf_vectorizer.pkl
+  model_metadata.pkl
 """
 
 import os
@@ -12,200 +21,214 @@ import joblib
 import pickle
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, List
 from datetime import datetime
+
+from .preprocessor import TicketPreprocessor
 
 
 class TicketClassifier:
     """
-    Multi-objective ticket classifier
-    
-    This class handles three simultaneous classification tasks:
-    - Ticket type classification
-    - Language detection
-    - Snowflake Data Warehouse level determination
+    Clasificador multi-objetivo de tickets.
+
+    Carga los artefactos entrenados desde model_artifacts/ y expone:
+      predict(ticket_dict)       → type, language, snowflake_level + confianzas
+      predict_batch(list[dict])  → lista de predicciones
+      get_model_info()           → metadata del entrenamiento
     """
-    
+
     def __init__(self, model_path: str, timestamp: Optional[str] = None):
         """
-        Initialize the TicketClassifier
-        
         Args:
-            model_path: Path to the directory containing trained models
-            timestamp: Specific model timestamp to load (optional)
+            model_path: Directorio con los .pkl entrenados (model_artifacts/).
+            timestamp:  No usado — mantenido por compatibilidad.
         """
         self.model_path = model_path
         self.timestamp = timestamp
-        
-        # Load models
-        self.model_type = None
-        self.model_language = None
+
+        self.model_type      = None
+        self.model_language  = None
         self.model_snowflake = None
-        self.scaler = None
-        self.label_encoders = None
-        self.metadata = None
-        
+        self.scaler          = None
+        self.label_encoders  = None   # decodificadores de etiquetas de salida
+        self.tfidf           = None   # TF-IDF vectorizer para texto de entrada
+        self.metadata        = None
+
         self._load_models()
-    
+        self._init_preprocessor()
+
+    # ------------------------------------------------------------------
+    # Inicialización interna
+    # ------------------------------------------------------------------
+
+    def _init_preprocessor(self):
+        """Inyecta el TF-IDF cargado en un TicketPreprocessor."""
+        self.preprocessor = TicketPreprocessor()
+        if self.tfidf is not None:
+            self.preprocessor.tfidf     = self.tfidf
+            self.preprocessor.is_fitted = True
+
     def _load_models(self):
-        """Load all trained models from disk"""
+        """Carga todos los artefactos .pkl desde model_path."""
         try:
-            # Find model files
-            if self.timestamp:
-                pattern = f"*_{self.timestamp}.pkl"
-            else:
-                # Load most recent models
-                pattern = "*.pkl"
-            
             model_files = [f for f in os.listdir(self.model_path) if f.endswith('.pkl')]
-            
-            # Load each model
+            if not model_files:
+                raise FileNotFoundError(f"No se encontraron .pkl en {self.model_path}")
+
             for file in model_files:
                 filepath = os.path.join(self.model_path, file)
-                
+
                 if 'model_type' in file:
                     self.model_type = joblib.load(filepath)
-                    print(f"✅ Loaded type classifier: {file}")
-                    
+                    print(f"✅ Cargado clasificador tipo:      {file}")
+
                 elif 'model_language' in file:
                     self.model_language = joblib.load(filepath)
-                    print(f"✅ Loaded language classifier: {file}")
-                    
+                    print(f"✅ Cargado clasificador idioma:    {file}")
+
                 elif 'model_snowflake' in file:
                     self.model_snowflake = joblib.load(filepath)
-                    print(f"✅ Loaded snowflake classifier: {file}")
-                    
-                elif 'scaler' in file:
+                    print(f"✅ Cargado clasificador snowflake: {file}")
+
+                elif file == 'scaler.pkl':
                     self.scaler = joblib.load(filepath)
-                    print(f"✅ Loaded scaler: {file}")
-                    
-                elif 'label_encoders' in file:
+                    print(f"✅ Cargado scaler:                 {file}")
+
+                elif file == 'label_encoders.pkl':
                     self.label_encoders = joblib.load(filepath)
-                    print(f"✅ Loaded label encoders: {file}")
-                    
+                    print(f"✅ Cargados label encoders:        {file}")
+
+                elif file == 'tfidf_vectorizer.pkl':
+                    self.tfidf = joblib.load(filepath)
+                    print(f"✅ Cargado TF-IDF vectorizer:      {file}")
+
                 elif 'metadata' in file:
                     with open(filepath, 'rb') as f:
                         self.metadata = pickle.load(f)
-                    print(f"✅ Loaded metadata: {file}")
-            
-            # Verify all models loaded
-            if not all([self.model_type, self.model_language, self.model_snowflake, self.scaler]):
-                raise ValueError("Not all required models were loaded!")
-                
+                    print(f"✅ Cargada metadata:               {file}")
+
+            # Verificar artefactos obligatorios
+            missing = []
+            if not self.model_type:      missing.append('model_type_*.pkl')
+            if not self.model_language:  missing.append('model_language_*.pkl')
+            if not self.model_snowflake: missing.append('model_snowflake_*.pkl')
+            if not self.scaler:          missing.append('scaler.pkl')
+            if not self.tfidf:           missing.append('tfidf_vectorizer.pkl')
+            if missing:
+                raise ValueError(f"Artefactos faltantes: {', '.join(missing)}")
+
         except Exception as e:
-            raise RuntimeError(f"Error loading models: {str(e)}")
-    
+            raise RuntimeError(f"Error cargando modelos: {str(e)}")
+
+    # ------------------------------------------------------------------
+    # Preprocesado
+    # ------------------------------------------------------------------
+
     def preprocess(self, ticket_data: Dict[str, Any]) -> np.ndarray:
         """
-        Preprocess raw ticket data into model input format
-        
+        Convierte un ticket (dict) en el vector de features sin escalar.
+
         Args:
-            ticket_data: Dictionary containing ticket information
-            
+            ticket_data: dict con campos: subject, body, priority, queue, ...
+
         Returns:
-            Preprocessed feature array
+            np.ndarray de shape (1, n_features).
         """
-        # TODO: Implement preprocessing pipeline
-        # This should include:
-        # - Text feature extraction (TF-IDF)
-        # - Categorical encoding
-        # - Feature scaling
-        pass
-    
+        return self.preprocessor.preprocess_single(ticket_data)
+
+    # ------------------------------------------------------------------
+    # Predicción
+    # ------------------------------------------------------------------
+
     def predict(self, ticket_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Predict all three objectives for a given ticket
-        
+        Predice tipo, idioma y nivel snowflake para un ticket.
+
         Args:
-            ticket_data: Dictionary containing ticket information
-            
+            ticket_data: dict con campos del ticket.
+
         Returns:
-            Dictionary with predictions and confidence scores
+            dict con 'type', 'language', 'snowflake_level',
+            'confidence_scores' y 'timestamp'.
         """
-        # Preprocess input
-        X = self.preprocess(ticket_data)
-        
-        # Scale features if needed
+        X        = self.preprocess(ticket_data)
         X_scaled = self.scaler.transform(X.reshape(1, -1))
-        
-        # Make predictions
-        type_pred = self.model_type.predict(X_scaled)[0]
-        language_pred = self.model_language.predict(X_scaled)[0]
+
+        type_pred      = self.model_type.predict(X_scaled)[0]
+        language_pred  = self.model_language.predict(X_scaled)[0]
         snowflake_pred = self.model_snowflake.predict(X_scaled)[0]
-        
-        # Get confidence scores (if available)
-        type_proba = None
-        language_proba = None
-        snowflake_proba = None
-        
-        if hasattr(self.model_type, 'predict_proba'):
-            type_proba = self.model_type.predict_proba(X_scaled)[0].tolist()
-            language_proba = self.model_language.predict_proba(X_scaled)[0].tolist()
-            snowflake_proba = self.model_snowflake.predict_proba(X_scaled)[0].tolist()
-        
+
+        # Decodificar etiquetas numéricas → strings
+        if self.label_encoders:
+            if 'type' in self.label_encoders:
+                type_pred = self.label_encoders['type'].inverse_transform([type_pred])[0]
+            if 'language' in self.label_encoders:
+                language_pred = self.label_encoders['language'].inverse_transform([language_pred])[0]
+            if 'snowflake' in self.label_encoders:
+                snowflake_pred = self.label_encoders['snowflake'].inverse_transform([snowflake_pred])[0]
+
         return {
-            'type': type_pred,
-            'language': language_pred,
-            'snowflake_level': snowflake_pred,
+            'type':            str(type_pred),
+            'language':        str(language_pred),
+            'snowflake_level': str(snowflake_pred),
             'confidence_scores': {
-                'type': type_proba,
-                'language': language_proba,
-                'snowflake': snowflake_proba
+                'type':      self._get_confidence(self.model_type,      X_scaled),
+                'language':  self._get_confidence(self.model_language,  X_scaled),
+                'snowflake': self._get_confidence(self.model_snowflake, X_scaled),
             },
             'timestamp': datetime.now().isoformat()
         }
-    
+
+    def _get_confidence(self, model, X_scaled: np.ndarray) -> Optional[List[float]]:
+        """
+        Devuelve puntuaciones de confianza normalizadas [0, 1].
+          - RF / GB / NB (predict_proba):  probabilidades directas.
+          - LinearSVC (decision_function): softmax para normalizar.
+        """
+        if hasattr(model, 'predict_proba'):
+            return model.predict_proba(X_scaled)[0].tolist()
+        if hasattr(model, 'decision_function'):
+            scores = model.decision_function(X_scaled)[0]
+            if np.ndim(scores) == 0:
+                return [float(scores)]
+            exp_s = np.exp(scores - scores.max())
+            return (exp_s / exp_s.sum()).tolist()
+        return None
+
     def predict_batch(self, tickets: list) -> list:
-        """
-        Predict for multiple tickets at once
-        
-        Args:
-            tickets: List of ticket dictionaries
-            
-        Returns:
-            List of prediction dictionaries
-        """
-        return [self.predict(ticket) for ticket in tickets]
-    
+        """Predice para una lista de tickets."""
+        return [self.predict(t) for t in tickets]
+
     def get_model_info(self) -> Dict[str, Any]:
-        """
-        Get information about loaded models
-        
-        Returns:
-            Dictionary with model metadata
-        """
-        return self.metadata if self.metadata else {
-            'type_model': str(type(self.model_type).__name__),
-            'language_model': str(type(self.model_language).__name__),
-            'snowflake_model': str(type(self.model_snowflake).__name__),
-            'loaded_at': datetime.now().isoformat()
+        """Devuelve información/metadata sobre los modelos cargados."""
+        if self.metadata:
+            return self.metadata
+        return {
+            'type_model':      type(self.model_type).__name__,
+            'language_model':  type(self.model_language).__name__,
+            'snowflake_model': type(self.model_snowflake).__name__,
+            'tfidf_loaded':    self.tfidf is not None,
+            'loaded_at':       datetime.now().isoformat()
         }
 
 
-# Example usage
+# Uso de ejemplo
 if __name__ == "__main__":
-    # Example of how to use the classifier
-    classifier = TicketClassifier(
-        model_path='../model_artifacts/',
-        timestamp=None  # Use most recent models
-    )
-    
-    # Example ticket
+    classifier = TicketClassifier(model_path='../model_artifacts/')
+
     ticket = {
-        'subject': 'Cannot access my account',
-        'body': 'I am unable to log in to my account. I get an error message.',
+        'subject':  'Cannot access my account',
+        'body':     'I am unable to log in to my account. I get an error message.',
         'priority': 'high',
-        'queue': 'technical_support',
-        'tags': ['login', 'authentication']
+        'queue':    'technical_support',
     }
-    
-    # Make prediction
+
     result = classifier.predict(ticket)
-    
+
     print("\n" + "="*80)
-    print("PREDICTION RESULTS")
+    print("RESULTADOS DE PREDICCIÓN")
     print("="*80)
-    print(f"\nTicket Type: {result['type']}")
-    print(f"Language: {result['language']}")
-    print(f"Snowflake Level: {result['snowflake_level']}")
-    print(f"\nConfidence Scores: {result['confidence_scores']}")
+    print(f"\nTipo de ticket:  {result['type']}")
+    print(f"Idioma:          {result['language']}")
+    print(f"Nivel Snowflake: {result['snowflake_level']}")
+    print(f"\nConfianza: {result['confidence_scores']}")
