@@ -18,7 +18,7 @@ from src.services.ml_service import MLService
 from src.services.dw_service import (
     _upsert_date, _upsert_customer, _upsert_agent,
     _upsert_dim_text, _upsert_language, _insert_tags,
-    _conn_to_bytes, LANG_NAMES,
+    _conn_to_bytes, decompress_db, compress_db, _to_epoch, LANG_NAMES,
 )
 
 import os
@@ -46,7 +46,7 @@ def _open_db(file_row) -> tuple[sqlite3.Connection, str]:
     storage_path = file_row[4]
     enc_nonce    = file_row[5]
     encrypted    = FileService.download_from_storage(storage_path)
-    db_bytes     = FileService.decrypt(encrypted, enc_nonce)
+    db_bytes     = decompress_db(FileService.decrypt(encrypted, enc_nonce))
     fd, tmp = tempfile.mkstemp(suffix='.db')
     os.close(fd)
     with open(tmp, 'wb') as f:
@@ -67,7 +67,8 @@ def _save_back(conn: sqlite3.Connection, tmp: str, file_id: int):
     conn.commit()
     conn.close()
     with open(tmp, 'rb') as f:
-        new_bytes = f.read()
+        raw_bytes = f.read()
+    new_bytes = compress_db(raw_bytes)
     row = FileModel.get_api_password_hash(file_id)
     storage_path = row[4]
     up = FileService.upload_overwrite(new_bytes, storage_path)
@@ -129,6 +130,7 @@ def ingest_tickets(file_id: int, api_key: str):
             name  = str(row.get('name', row.get('submitter_name', row.get('customer_name', ''))))
             prio  = str(row.get('priority', row.get('prioridad', 'normal'))).lower()
             created_at_val = row.get('created_at', datetime.now().isoformat())
+            created_ts = _to_epoch(created_at_val)
             agent = row.get('agent_name', row.get('assigned_to', None))
 
             date_key     = _upsert_date(conn, created_at_val)
@@ -142,10 +144,10 @@ def ingest_tickets(file_id: int, api_key: str):
                 conn.execute("""
                     INSERT INTO fact_tickets
                     (date_key, customer_key, agent_key, priority_key, status_key,
-                     submitter_email, submitter_name, created_at, pred_type, pred_language)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                     created_at, pred_type, pred_language)
+                    VALUES (?,?,?,?,?,?,?,?)
                 """, (date_key, customer_key, agent_key, prio_key, status_key,
-                      email, name, str(created_at_val), pred_type, pred_lang))
+                      created_ts, pred_type, pred_lang))
                 tid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 conn.execute("INSERT INTO ticket_text VALUES (?,?,?)", (tid, subj, body_text))
 
@@ -155,14 +157,12 @@ def ingest_tickets(file_id: int, api_key: str):
                 conn.execute("""
                     INSERT INTO fact_tickets
                     (date_key, customer_key, agent_key, type_key, priority_key,
-                     status_key, language_key, submitter_email, submitter_name,
-                     created_at, pred_type, pred_language)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                     status_key, language_key, created_at)
+                    VALUES (?,?,?,?,?,?,?,?)
                 """, (date_key, customer_key, agent_key, type_key, prio_key,
-                      status_key, lang_key, email, name,
-                      str(created_at_val), pred_type, pred_lang))
+                      status_key, lang_key, created_ts))
                 tid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                conn.execute("INSERT INTO ticket_text VALUES (?,?,?,?)", (tid, subj, body_text, None))
+                conn.execute("INSERT INTO ticket_text VALUES (?,?,?)", (tid, subj, body_text))
 
             else:  # PRO
                 type_key  = _upsert_dim_text(conn, 'dim_ticket_type', 'type_name', 'type_key', pred_type)
@@ -172,16 +172,15 @@ def ingest_tickets(file_id: int, api_key: str):
                 conn.execute("""
                     INSERT INTO fact_tickets
                     (date_key, customer_key, agent_key, type_key, priority_key, queue_key,
-                     language_key, status_key, submitter_email, submitter_name,
-                     created_at, word_count_subject, word_count_body,
-                     pred_type, pred_language)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     language_key, status_key,
+                     created_at, word_count_subject, word_count_body)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 """, (date_key, customer_key, agent_key, type_key, prio_key, queue_key,
-                      lang_key, status_key, email, name, str(created_at_val),
-                      len(subj.split()), len(body_text.split()), pred_type, pred_lang))
+                      lang_key, status_key, created_ts,
+                      len(subj.split()), len(body_text.split())))
                 tid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                conn.execute("INSERT INTO ticket_text VALUES (?,?,?,?,?)",
-                             (tid, subj, body_text, None, None))
+                conn.execute("INSERT INTO ticket_text VALUES (?,?,?,?)",
+                             (tid, subj, body_text, None))
                 tag_cols = [c for c in df_classified.columns if c.startswith('tag_')]
                 if tag_cols:
                     _insert_tags(conn, tid, tag_cols, row)

@@ -38,6 +38,13 @@ def _extract_level(filename: str):
     return m.group(1).upper() if m else None
 
 
+def _display_name(filename: str) -> str:
+    """Quita la extensión .db y el sufijo _LEVEL para mostrar en el frontend."""
+    name = re.sub(r'\.db$', '', filename or '', flags=re.IGNORECASE)
+    name = re.sub(r'_(BASIC|MEDIUM|PRO)$', '', name, flags=re.IGNORECASE)
+    return name or filename
+
+
 def _fmt_bytes(n):
     if n < 1024:      return f"{n} B"
     if n < 1_048_576: return f"{n/1024:.1f} KB"
@@ -128,6 +135,7 @@ def dashboard():
         {
             'id':         r[0],
             'filename':   r[1],
+            'display_name': _display_name(r[1]),
             'level':      _extract_level(r[1]),
             'file_type':  r[2],
             'size_fmt':   _fmt_bytes(r[3]),
@@ -174,7 +182,13 @@ def upload():
         flash('No se generó ninguna base de datos (CSV sin tickets válidos)', 'error')
         return redirect(url_for('web.dashboard'))
 
-    base_name = f.filename.rsplit('.', 1)[0]
+    base_name = request.form.get('db_name', '').strip()
+    if not base_name:
+        base_name = f.filename.rsplit('.', 1)[0]
+    # Sanitizar: solo alfanuméricos, espacios, guiones y underscores
+    base_name = re.sub(r'[^\w\s\-]', '', base_name).strip()
+    if not base_name:
+        base_name = 'database'
     created   = []
 
     for level, db_bytes in db_files.items():
@@ -201,16 +215,46 @@ def upload():
         created.append({
             'filename': filename,
             'level':    level,
-            'n_tickets': int((df['pred_level'] == level).sum()),
+            'n_tickets': len(df),
             'api_key':  plain_api_key,
             'file_id':  file_id,
         })
 
     if created:
         session['upload_result'] = created
-        flash(f'Se crearon {len(created)} bases de datos correctamente', 'success')
+        flash(f'Base de datos {created[0]["level"]} creada con {created[0]["n_tickets"]} tickets', 'success')
 
     return redirect(url_for('web.dashboard'))
+
+
+@web_blueprint.route('/explorer/<int:file_id>/rename', methods=['POST'])
+@login_required
+def rename_db(file_id):
+    row = _check_access(file_id)
+    if not row or not row[9]:
+        return jsonify({'error': 'Solo el propietario puede renombrar'}), 403
+
+    body = request.get_json(silent=True) or {}
+    new_name = str(body.get('name', '')).strip()
+    if not new_name:
+        return jsonify({'error': 'El nombre es obligatorio'}), 400
+
+    # Sanitizar
+    new_name = re.sub(r'[^\w\s\-]', '', new_name).strip()
+    if not new_name:
+        return jsonify({'error': 'Nombre no válido'}), 400
+
+    # Preservar sufijo _LEVEL.db
+    old_filename = row[1]
+    level = _extract_level(old_filename)
+    suffix = f'_{level}.db' if level else '.db'
+    new_filename = f'{new_name}{suffix}'
+
+    ok = FileModel.rename(file_id, session['user_id'], new_filename)
+    if not ok:
+        return jsonify({'error': 'No se pudo renombrar'}), 500
+
+    return jsonify({'filename': new_filename, 'display_name': _display_name(new_filename)})
 
 
 @web_blueprint.route('/dashboard/join', methods=['POST'])
@@ -257,6 +301,7 @@ def explorer(file_id):
     file_info = {
         'id':             row[0],
         'filename':       row[1],
+        'display_name':   _display_name(row[1]),
         'level':          _extract_level(row[1]),
         'size_fmt':       _fmt_bytes(row[3]),
         'status':         row[4],

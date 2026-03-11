@@ -21,6 +21,7 @@ import tempfile
 
 from src.api.models.file_model import FileModel
 from src.services.file_service import FileService
+from src.services.dw_service import decompress_db, compress_db
 
 # ──────────────────────────────────────────────────────────────────────
 # Clasificación de queries
@@ -74,7 +75,7 @@ def _fetch_db(file_id: int, user_id: int) -> tuple[bytes, dict]:
         raise RuntimeError("El archivo no tiene metadatos de cifrado")
 
     encrypted = FileService.download_from_storage(storage_path)
-    db_bytes  = FileService.decrypt(encrypted, enc_nonce)
+    db_bytes  = decompress_db(FileService.decrypt(encrypted, enc_nonce))
 
     return db_bytes, {
         'file_id':      row[0],
@@ -233,7 +234,8 @@ class DBSessionService:
             # Re-cifrar y re-subir si la query modificó datos
             if write:
                 with open(tmp, 'rb') as f:
-                    new_bytes = f.read()
+                    raw_bytes = f.read()
+                new_bytes = compress_db(raw_bytes)
                 up = FileService.upload_overwrite(new_bytes, meta['storage_path'])
                 FileModel.update_encryption_meta(
                     file_id,

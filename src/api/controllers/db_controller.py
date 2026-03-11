@@ -71,7 +71,7 @@ def execute_query(file_id: int):
     Ejecuta una query SQLite sobre el .db.
 
     Body (JSON):
-        { "sql": "SELECT * FROM fact_tickets WHERE pred_type='Incident'" }
+        { "sql": "SELECT f.*, t.type_name FROM fact_tickets f JOIN dim_ticket_type t USING(type_key)" }
 
     Response 200:
         {

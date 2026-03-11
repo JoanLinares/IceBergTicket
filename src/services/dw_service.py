@@ -1,7 +1,15 @@
 """
-DWService — Crea bases de datos SQLite con los tickets clasificados.
+DWService — Crea UNA base de datos SQLite con los tickets clasificados.
 
-Para cada nivel (BASIC / MEDIUM / PRO) que tenga tickets:
+Analiza las predicciones del modelo ML para determinar el nivel óptimo
+(BASIC / MEDIUM / PRO) para todo el dataset y crea un solo SQLite con
+ese esquema, incluyendo TODOS los tickets.
+
+Estrategia de selección:
+  - Se elige el nivel con más tickets (mayoría).
+  - En caso de empate, se elige el nivel más alto (PRO > MEDIUM > BASIC).
+
+Esquema según nivel:
   1. Crea un SQLite en memoria con el esquema del nivel correspondiente.
   2. Inserta dims (dim_date, dim_customer, dim_agent, dim_type, dim_language,
      dim_priority, dim_status) con lógica INSERT OR IGNORE.
@@ -10,12 +18,14 @@ Para cada nivel (BASIC / MEDIUM / PRO) que tenga tickets:
   5. Serializa el .db a bytes (vía fichero temporal).
 
 Returns:
-    dict { 'BASIC': bytes, 'MEDIUM': bytes, 'PRO': bytes }  (solo niveles con datos)
+    dict { nivel_óptimo: bytes }  (siempre un solo elemento)
 """
 import os
 import sqlite3
 import tempfile
 import hashlib
+import lzma
+import zlib
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -28,12 +38,47 @@ LANG_NAMES = {
     'fr': 'Français', 'pt': 'Português',
 }
 
+# Longitud máxima de texto en ticket_text (el DW es analítico, no operacional)
+_MAX_BODY_LEN    = 1000
+_MAX_ANSWER_LEN  = 500
+_MAX_SUBJECT_LEN = 200
+
+
+def _truncate(text: str, max_len: int) -> str:
+    if not text or len(text) <= max_len:
+        return text
+    return text[:max_len - 1] + '…'
+
+
+def _to_epoch(val) -> int:
+    """Convierte un valor de fecha a Unix epoch (int). Compacto en SQLite."""
+    if val is None:
+        return int(datetime.now().timestamp())
+    if isinstance(val, (int, float)):
+        return int(val)
+    try:
+        return int(pd.Timestamp(str(val)).timestamp())
+    except Exception:
+        return int(datetime.now().timestamp())
+
+
+def _apply_pragmas(conn: sqlite3.Connection):
+    """Optimizaciones SQLite para reducir espacio en disco y acelerar inserción."""
+    conn.executescript("""
+        PRAGMA page_size     = 4096;
+        PRAGMA journal_mode  = MEMORY;
+        PRAGMA synchronous   = OFF;
+        PRAGMA temp_store    = MEMORY;
+        PRAGMA cache_size    = -65536;
+    """)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Creación de esquemas
 # ──────────────────────────────────────────────────────────────────────
 
 def _basic_schema(conn):
+    _apply_pragmas(conn)
     conn.executescript("""
         PRAGMA foreign_keys = OFF;
         CREATE TABLE IF NOT EXISTS dim_date (
@@ -43,26 +88,25 @@ def _basic_schema(conn):
         );
         CREATE TABLE IF NOT EXISTS dim_customer (
             customer_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_name TEXT, email TEXT UNIQUE, created_at TEXT
+            customer_name TEXT, email TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_agent (
             agent_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT UNIQUE, email TEXT, team TEXT
+            agent_name TEXT UNIQUE, team TEXT
         );
         CREATE TABLE IF NOT EXISTS dim_priority (
             priority_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            priority_name TEXT UNIQUE, level INTEGER
+            priority_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_status (
             status_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            status_name TEXT UNIQUE, category TEXT
+            status_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS fact_tickets (
             ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
             date_key INTEGER, customer_key INTEGER, agent_key INTEGER,
             priority_key INTEGER, status_key INTEGER,
-            submitter_email TEXT, submitter_name TEXT,
-            created_at TEXT, pred_type TEXT, pred_language TEXT
+            created_at INTEGER, pred_type TEXT, pred_language TEXT
         );
         CREATE TABLE IF NOT EXISTS ticket_text (
             ticket_id INTEGER PRIMARY KEY,
@@ -72,6 +116,7 @@ def _basic_schema(conn):
 
 
 def _medium_schema(conn):
+    _apply_pragmas(conn)
     conn.executescript("""
         PRAGMA foreign_keys = OFF;
         CREATE TABLE IF NOT EXISTS dim_date (
@@ -86,19 +131,19 @@ def _medium_schema(conn):
         );
         CREATE TABLE IF NOT EXISTS dim_agent (
             agent_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT UNIQUE, email TEXT, team TEXT
+            agent_name TEXT UNIQUE, team TEXT
         );
         CREATE TABLE IF NOT EXISTS dim_type (
             type_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            type_name TEXT UNIQUE, type_description TEXT
+            type_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_priority (
             priority_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            priority_name TEXT UNIQUE, level INTEGER, sla_hours INTEGER
+            priority_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_status (
             status_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            status_name TEXT UNIQUE, category TEXT, is_final INTEGER
+            status_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_language (
             language_key INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,18 +154,17 @@ def _medium_schema(conn):
             date_key INTEGER, customer_key INTEGER, agent_key INTEGER,
             type_key INTEGER, priority_key INTEGER, status_key INTEGER,
             language_key INTEGER,
-            submitter_email TEXT, submitter_name TEXT,
-            created_at TEXT, sla_breached INTEGER,
-            pred_type TEXT, pred_language TEXT
+            created_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS ticket_text (
             ticket_id INTEGER PRIMARY KEY,
-            subject TEXT, description TEXT, internal_notes TEXT
+            subject TEXT, description TEXT
         );
     """)
 
 
 def _pro_schema(conn):
+    _apply_pragmas(conn)
     conn.executescript("""
         PRAGMA foreign_keys = OFF;
         CREATE TABLE IF NOT EXISTS dim_date (
@@ -132,24 +176,23 @@ def _pro_schema(conn):
         );
         CREATE TABLE IF NOT EXISTS dim_customer (
             customer_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_name TEXT, email TEXT UNIQUE,
-            company_name TEXT, account_type TEXT
+            customer_name TEXT, email TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_agent (
             agent_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT UNIQUE, email TEXT, team TEXT, skill_level TEXT
+            agent_name TEXT UNIQUE, team TEXT
         );
         CREATE TABLE IF NOT EXISTS dim_ticket_type (
             type_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            type_name TEXT UNIQUE, type_description TEXT
+            type_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_priority (
             priority_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            priority_name TEXT UNIQUE, priority_level INTEGER
+            priority_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_queue (
             queue_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            queue_name TEXT UNIQUE, department TEXT, active_flag INTEGER
+            queue_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_language (
             language_key INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,30 +200,26 @@ def _pro_schema(conn):
         );
         CREATE TABLE IF NOT EXISTS dim_status (
             status_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            status_name TEXT UNIQUE, is_open INTEGER, is_final INTEGER
+            status_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS dim_tag (
             tag_key INTEGER PRIMARY KEY AUTOINCREMENT,
-            tag_name TEXT UNIQUE, tag_category TEXT
+            tag_name TEXT UNIQUE
         );
         CREATE TABLE IF NOT EXISTS fact_tickets (
             ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
             date_key INTEGER, customer_key INTEGER, agent_key INTEGER,
             type_key INTEGER, priority_key INTEGER, queue_key INTEGER,
             language_key INTEGER, status_key INTEGER,
-            submitter_email TEXT, submitter_name TEXT,
-            created_at TEXT, response_count INTEGER,
-            escalated_flag INTEGER, sla_breached_flag INTEGER,
-            word_count_subject INTEGER, word_count_body INTEGER,
-            pred_type TEXT, pred_language TEXT
+            created_at INTEGER, word_count_subject INTEGER, word_count_body INTEGER
         );
         CREATE TABLE IF NOT EXISTS bridge_ticket_tags (
             ticket_id INTEGER, tag_key INTEGER, tag_order INTEGER,
             PRIMARY KEY (ticket_id, tag_key)
-        );
+        ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS ticket_text (
             ticket_id INTEGER PRIMARY KEY,
-            subject TEXT, body TEXT, answer TEXT, internal_notes TEXT
+            subject TEXT, body TEXT, answer TEXT
         );
     """)
 
@@ -266,24 +305,50 @@ def _upsert_language(conn, lang_code) -> int | None:
     return row[0] if row else None
 
 
-def _insert_tags(conn, ticket_id: int, tag_cols: list, row: pd.Series):
-    """Inserta tags activas (columnas tag_* = True/1) en dim_tag + bridge."""
+def _insert_tags(conn, ticket_id: int, tag_cols: list, row: pd.Series,
+                 tag_cache: dict | None = None):
+    """Inserta tags en dim_tag + bridge. Soporta dos formatos:
+    - Columna 'tags' con valores separados por coma: "Bug, Feature, Crash"
+    - Columnas individuales tag_* = True/1
+    Usa tag_cache para evitar SELECT repetidos (~8 tags únicos, 400k lookups).
+    """
+    if tag_cache is None:
+        tag_cache = {}
+
+    def _tag_key(name: str) -> int | None:
+        if name in tag_cache:
+            return tag_cache[name]
+        conn.execute("INSERT OR IGNORE INTO dim_tag (tag_name) VALUES (?)", (name,))
+        r = conn.execute("SELECT tag_key FROM dim_tag WHERE tag_name=?", (name,)).fetchone()
+        if r:
+            tag_cache[name] = r[0]
+            return r[0]
+        return None
+
+    # Formato 1: columna única 'tags' con valores separados por coma
+    tags_val = row.get('tags', None)
+    if tags_val and str(tags_val).strip().lower() not in ('', 'nan', 'none'):
+        for order, tag_name in enumerate(str(tags_val).split(',')):
+            tag_name = tag_name.strip()
+            if not tag_name:
+                continue
+            tk = _tag_key(tag_name)
+            if tk is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO bridge_ticket_tags VALUES (?,?,?)",
+                    (ticket_id, tk, order))
+        return
+
+    # Formato 2: columnas individuales tag_*
     for order, col in enumerate(tag_cols):
         val = row.get(col)
         if val and str(val).strip().lower() not in ('false', '0', 'nan', ''):
             tag_name = col.replace('tag_', '').replace('_', ' ')
-            conn.execute(
-                "INSERT OR IGNORE INTO dim_tag (tag_name, tag_category) VALUES (?,?)",
-                (tag_name, 'auto')
-            )
-            tag_row = conn.execute(
-                "SELECT tag_key FROM dim_tag WHERE tag_name=?", (tag_name,)
-            ).fetchone()
-            if tag_row:
+            tk = _tag_key(tag_name)
+            if tk is not None:
                 conn.execute(
                     "INSERT OR IGNORE INTO bridge_ticket_tags VALUES (?,?,?)",
-                    (ticket_id, tag_row[0], order)
-                )
+                    (ticket_id, tk, order))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -354,11 +419,11 @@ def _synthesize_missing_columns(subset: pd.DataFrame) -> pd.DataFrame:
 
 def _insert_tickets(conn, level: str, subset: pd.DataFrame):
     """Inserta todos los tickets de subset en la conexión según el nivel."""
-    # Generar datos sintéticos para columnas que no existen en el CSV
     subset = _synthesize_missing_columns(subset)
 
     subj_col   = _find_col(subset, 'subject')
     body_col   = _find_col(subset, 'body')
+    answer_col = _find_col(subset, 'answer')
     email_col  = _find_col(subset, 'submitter_email')
     name_col   = _find_col(subset, 'submitter_name')
     agent_col  = _find_col(subset, 'agent_name')
@@ -367,85 +432,111 @@ def _insert_tickets(conn, level: str, subset: pd.DataFrame):
     date_col   = _find_col(subset, 'created_at')
     status_col = _find_col(subset, 'status')
     tag_cols   = [c for c in subset.columns if c.startswith('tag_')]
+    has_tags_col = 'tags' in subset.columns
 
+    # Pre-cachear dimensiones (incluye clientes) para evitar SELECTs repetidos
+    _dim_cache: dict = {}
+
+    def _cached_upsert_dim(table, name_col_db, key_col, value):
+        if not value:
+            return None
+        cache_key = (table, value)
+        if cache_key in _dim_cache:
+            return _dim_cache[cache_key]
+        result = _upsert_dim_text(conn, table, name_col_db, key_col, value)
+        _dim_cache[cache_key] = result
+        return result
+
+    def _cached_language(lang_code):
+        if not lang_code:
+            return None
+        cache_key = ('dim_language', lang_code)
+        if cache_key in _dim_cache:
+            return _dim_cache[cache_key]
+        result = _upsert_language(conn, lang_code)
+        _dim_cache[cache_key] = result
+        return result
+
+    def _cached_customer(name, email):
+        norm_email = (email or 'unknown@unknown.com').lower()
+        cache_key = ('dim_customer', norm_email)
+        if cache_key in _dim_cache:
+            return _dim_cache[cache_key]
+        result = _upsert_customer(conn, name, email)
+        _dim_cache[cache_key] = result
+        return result
+
+    # Insertar por lotes con transacción explícita
+    conn.execute("BEGIN")
     for _, row in subset.iterrows():
         date_key     = _upsert_date(conn, row.get(date_col) if date_col else None)
-        customer_key = _upsert_customer(conn,
-                                        row.get(name_col) if name_col else None,
-                                        row.get(email_col) if email_col else None)
+        customer_key = _cached_customer(
+            row.get(name_col) if name_col else None,
+            row.get(email_col) if email_col else None)
         agent_key    = _upsert_agent(conn,
                                      row.get(agent_col) if agent_col else None,
                                      row.get('_agent_team') if '_agent_team' in row.index else None)
-        prio_val     = str(row.get(prio_col, 'normal')).lower() if prio_col else 'normal'
-        status_val   = str(row.get(status_col, 'open')).lower() if status_col else 'open'
-        pred_type    = str(row.get('pred_type', ''))
-        pred_lang    = str(row.get('pred_language', ''))
+        prio_val   = str(row.get(prio_col, 'normal')).lower() if prio_col else 'normal'
+        status_val = str(row.get(status_col, 'open')).lower() if status_col else 'open'
+        pred_type  = str(row.get('pred_type', ''))
+        pred_lang  = str(row.get('pred_language', ''))
+        created_ts = _to_epoch(row.get(date_col) if date_col else None)
 
-        subj_text = str(row.get(subj_col, '')) if subj_col else ''
-        body_text = str(row.get(body_col, '')) if body_col else ''
+        subj_text   = _truncate(str(row.get(subj_col,   '')) if subj_col   else '', _MAX_SUBJECT_LEN)
+        body_text   = _truncate(str(row.get(body_col,   '')) if body_col   else '', _MAX_BODY_LEN)
+        answer_text = _truncate(str(row.get(answer_col, '')) if answer_col else '', _MAX_ANSWER_LEN)
 
         if level == 'BASIC':
-            priority_key = _upsert_dim_text(conn, 'dim_priority', 'priority_name', 'priority_key', prio_val)
-            status_key   = _upsert_dim_text(conn, 'dim_status',   'status_name',   'status_key',   status_val)
+            priority_key = _cached_upsert_dim('dim_priority', 'priority_name', 'priority_key', prio_val)
+            status_key   = _cached_upsert_dim('dim_status',   'status_name',   'status_key',   status_val)
             conn.execute("""
                 INSERT INTO fact_tickets
                 (date_key, customer_key, agent_key, priority_key, status_key,
-                 submitter_email, submitter_name, created_at, pred_type, pred_language)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
+                 created_at, pred_type, pred_language)
+                VALUES (?,?,?,?,?,?,?,?)
             """, (date_key, customer_key, agent_key, priority_key, status_key,
-                  row.get(email_col) if email_col else None,
-                  row.get(name_col) if name_col else None,
-                  row.get(date_col) if date_col else datetime.now().isoformat(),
-                  pred_type, pred_lang))
+                  created_ts, pred_type, pred_lang))
             tid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             conn.execute("INSERT INTO ticket_text VALUES (?,?,?)", (tid, subj_text, body_text))
 
         elif level == 'MEDIUM':
-            type_key     = _upsert_dim_text(conn, 'dim_type',     'type_name',     'type_key',     pred_type)
-            language_key = _upsert_language(conn, pred_lang)
-            priority_key = _upsert_dim_text(conn, 'dim_priority', 'priority_name', 'priority_key', prio_val)
-            status_key   = _upsert_dim_text(conn, 'dim_status',   'status_name',   'status_key',   status_val)
+            type_key     = _cached_upsert_dim('dim_type',     'type_name',     'type_key',     pred_type)
+            language_key = _cached_language(pred_lang)
+            priority_key = _cached_upsert_dim('dim_priority', 'priority_name', 'priority_key', prio_val)
+            status_key   = _cached_upsert_dim('dim_status',   'status_name',   'status_key',   status_val)
             conn.execute("""
                 INSERT INTO fact_tickets
                 (date_key, customer_key, agent_key, type_key, priority_key,
-                 status_key, language_key, submitter_email, submitter_name,
-                 created_at, pred_type, pred_language)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                 status_key, language_key, created_at)
+                VALUES (?,?,?,?,?,?,?,?)
             """, (date_key, customer_key, agent_key, type_key, priority_key,
-                  status_key, language_key,
-                  row.get(email_col) if email_col else None,
-                  row.get(name_col) if name_col else None,
-                  row.get(date_col) if date_col else datetime.now().isoformat(),
-                  pred_type, pred_lang))
+                  status_key, language_key, created_ts))
             tid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            conn.execute("INSERT INTO ticket_text VALUES (?,?,?,?)", (tid, subj_text, body_text, None))
+            conn.execute("INSERT INTO ticket_text VALUES (?,?,?)", (tid, subj_text, body_text))
 
         elif level == 'PRO':
-            type_key     = _upsert_dim_text(conn, 'dim_ticket_type', 'type_name',     'type_key',     pred_type)
-            language_key = _upsert_language(conn, pred_lang)
-            priority_key = _upsert_dim_text(conn, 'dim_priority',    'priority_name', 'priority_key', prio_val)
-            status_key   = _upsert_dim_text(conn, 'dim_status',      'status_name',   'status_key',   status_val)
+            type_key     = _cached_upsert_dim('dim_ticket_type', 'type_name',     'type_key',     pred_type)
+            language_key = _cached_language(pred_lang)
+            priority_key = _cached_upsert_dim('dim_priority',    'priority_name', 'priority_key', prio_val)
+            status_key   = _cached_upsert_dim('dim_status',      'status_name',   'status_key',   status_val)
             queue_val    = str(row.get(queue_col, 'general')) if queue_col else 'general'
-            queue_key    = _upsert_dim_text(conn, 'dim_queue',        'queue_name',    'queue_key',    queue_val)
+            queue_key    = _cached_upsert_dim('dim_queue',        'queue_name',    'queue_key',    queue_val)
             wc_subj      = len(subj_text.split())
             wc_body      = len(body_text.split())
             conn.execute("""
                 INSERT INTO fact_tickets
                 (date_key, customer_key, agent_key, type_key, priority_key, queue_key,
-                 language_key, status_key, submitter_email, submitter_name,
-                 created_at, word_count_subject, word_count_body,
-                 pred_type, pred_language)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 language_key, status_key,
+                 created_at, word_count_subject, word_count_body)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
             """, (date_key, customer_key, agent_key, type_key, priority_key, queue_key,
-                  language_key, status_key,
-                  row.get(email_col) if email_col else None,
-                  row.get(name_col) if name_col else None,
-                  row.get(date_col) if date_col else datetime.now().isoformat(),
-                  wc_subj, wc_body, pred_type, pred_lang))
+                  language_key, status_key, created_ts, wc_subj, wc_body))
             tid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            conn.execute("INSERT INTO ticket_text VALUES (?,?,?,?,?)", (tid, subj_text, body_text, None, None))
-            if tag_cols:
-                _insert_tags(conn, tid, tag_cols, row)
+            conn.execute("INSERT INTO ticket_text VALUES (?,?,?,?)",
+                         (tid, subj_text, body_text, answer_text))
+            if tag_cols or has_tags_col:
+                _insert_tags(conn, tid, tag_cols, row, tag_cache=_dim_cache)
+    conn.commit()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -453,40 +544,105 @@ def _insert_tickets(conn, level: str, subset: pd.DataFrame):
 # ──────────────────────────────────────────────────────────────────────
 
 def _conn_to_bytes(conn: sqlite3.Connection) -> bytes:
-    """Vuelca la conexión SQLite en memoria a bytes vía fichero temporal."""
+    """Vuelca la conexión SQLite en memoria a bytes comprimidos con LZMA.
+
+    LZMA da ~30-40% mejor ratio que zlib en datos textuales.
+    Prefijo b'LMDB' indica formato lzma; retrocompatible con ZLDB.
+    """
     conn.commit()
     fd, tmp = tempfile.mkstemp(suffix='.db')
     os.close(fd)
     try:
         bk = sqlite3.connect(tmp)
         conn.backup(bk)
+        bk.execute("VACUUM")
         bk.close()
         with open(tmp, 'rb') as f:
-            return f.read()
+            raw = f.read()
+        return b'LMDB' + lzma.compress(raw, preset=9)
     finally:
         os.unlink(tmp)
+
+
+def compress_db(raw: bytes) -> bytes:
+    """Compress raw SQLite bytes with LZMA (used by all write-back paths)."""
+    return b'LMDB' + lzma.compress(raw, preset=9)
+
+
+def decompress_db(data: bytes) -> bytes:
+    """Descomprime bytes de un .db creado por _conn_to_bytes.
+    Soporta LMDB (lzma), ZLDB (zlib), y raw SQLite (retrocompatible).
+    """
+    prefix = data[:4]
+    if prefix == b'LMDB':
+        return lzma.decompress(data[4:])
+    if prefix == b'ZLDB':
+        return zlib.decompress(data[4:])
+    return data
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Punto de entrada
 # ──────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────
+# Selección del nivel óptimo por estructura del CSV
+# ──────────────────────────────────────────────────────────────────────
+
+# Columnas que solo el esquema PRO puede almacenar
+_PRO_ONLY_KEYS = ('queue', 'answer', 'version', 'tags')
+# Columnas que requieren al menos MEDIUM
+_MEDIUM_KEYS = ('ticket_type', 'language')
+
+
+def _choose_optimal_level(df: pd.DataFrame) -> str:
+    """
+    Elige el nivel MÍNIMO de DW que pueda almacenar toda la información
+    presente en el CSV, para ocupar el menor espacio posible.
+
+    Lógica:
+      - Si el CSV tiene tags (tag_* o columna 'tags'), queue, answer
+        o version → PRO (único esquema con dim_queue, dim_tag, ticket_text.answer).
+      - Si tiene tipo de ticket o idioma como columna explícita → MEDIUM
+        (añade dim_type y dim_language).
+      - En caso contrario → BASIC (dimensiones esenciales).
+    """
+    cols = {c.lower() for c in df.columns}
+
+    # ¿Necesita PRO?
+    has_tags = any(c.startswith('tag_') for c in cols) or 'tags' in cols
+    needs_pro = has_tags or any(_find_col(df, k) is not None for k in _PRO_ONLY_KEYS)
+    if needs_pro:
+        return 'PRO'
+
+    # ¿Necesita MEDIUM?
+    needs_medium = any(_find_col(df, k) is not None for k in _MEDIUM_KEYS)
+    if needs_medium:
+        return 'MEDIUM'
+
+    return 'BASIC'
+
+
 class DWService:
 
     @staticmethod
     def create_databases(df_classified: pd.DataFrame) -> Dict[str, bytes]:
         """
-        Recibe el DataFrame con columnas pred_type, pred_language, pred_level
-        y devuelve { nivel: bytes_del_db } para cada nivel con al menos un ticket.
+        Recibe el DataFrame clasificado por ML.
+        Analiza las columnas del CSV para determinar el nivel mínimo de DW
+        que puede contener toda la información (BASIC / MEDIUM / PRO) y
+        crea UNA sola base de datos con ese esquema y TODOS los tickets.
+
+        Returns:
+            dict { nivel_óptimo: bytes_del_db }  (siempre un solo elemento)
         """
-        result = {}
-        for level in ('BASIC', 'MEDIUM', 'PRO'):
-            subset = df_classified[df_classified['pred_level'] == level].copy()
-            if subset.empty:
-                continue
-            conn = sqlite3.connect(':memory:')
-            _SCHEMA_MAP[level](conn)
-            _insert_tickets(conn, level, subset)
-            result[level] = _conn_to_bytes(conn)
-            conn.close()
+        if df_classified.empty:
+            return {}
+
+        level = _choose_optimal_level(df_classified)
+        conn = sqlite3.connect(':memory:')
+        _SCHEMA_MAP[level](conn)
+        _insert_tickets(conn, level, df_classified)
+        result = {level: _conn_to_bytes(conn)}
+        conn.close()
         return result

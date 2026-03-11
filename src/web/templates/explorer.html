@@ -144,6 +144,16 @@
           </div>
         </div>
 
+        <!-- Rename -->
+        <div class="settings-section">
+          <h3>✏️ Renombrar</h3>
+          <p class="text-sm text-dim mb-1">Cambia el nombre visible de la base de datos.</p>
+          <div class="copy-group">
+            <input class="input" type="text" id="renameInput" value="{{ file.display_name }}" maxlength="100">
+            <button class="btn btn-primary btn-sm" id="renameBtn" onclick="submitRename()">Guardar</button>
+          </div>
+        </div>
+
         <!-- Delete -->
         <div class="settings-section">
           <h3>🗑 Zona peligrosa</h3>
@@ -155,7 +165,7 @@
         <!-- Info -->
         <div class="settings-section">
           <h3>ℹ Info</h3>
-          <p class="text-sm text-dim">Nombre: <strong class="text-dim">{{ file.filename }}</strong></p>
+          <p class="text-sm text-dim">Nombre: <strong class="text-dim" id="infoName">{{ file.display_name }}</strong></p>
           <p class="text-sm text-dim">Tamaño: <strong class="text-dim">{{ file.size_fmt }}</strong></p>
           <p class="text-sm text-dim">Creado: <strong class="text-dim">{{ file.created_at.strftime('%d %b %Y') }}</strong></p>
         </div>
@@ -416,6 +426,21 @@ async function regenerateApiKey() {
     document.getElementById('ingestUrlDisplay').textContent = window.location.origin + res.ingest_url;
     showToast('¡API Key regenerada! Guárdala.', 'warning');
   } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function submitRename() {
+  const name = document.getElementById('renameInput').value.trim();
+  if (!name) return showToast('Introduce un nombre', 'error');
+  const btn = document.getElementById('renameBtn');
+  btn.disabled = true;
+  btn.textContent = 'Guardando…';
+  try {
+    const res = await doPOST(`/explorer/${FILE_ID}/rename`, { name });
+    document.getElementById('renameInput').value = res.display_name;
+    document.getElementById('infoName').textContent = res.display_name;
+    showToast('Nombre actualizado', 'success');
+  } catch (err) { showToast(err.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Guardar'; }
 }
 </script>
 {% endblock %}

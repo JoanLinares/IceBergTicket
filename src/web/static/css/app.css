@@ -132,6 +132,7 @@ h3{font-size:1.1rem;font-weight:600}
 }
 .db-card{position:relative;transition:transform .15s}
 .db-card:hover{transform:translateY(-2px)}
+.mt-1{margin-top:.75rem}
 .db-card .db-name{font-weight:600;font-size:1rem;margin-bottom:.25rem}
 .db-card .db-meta{display:flex;gap:1rem;flex-wrap:wrap;font-size:.8rem;color:var(--text-dim)}
 .level-badge{
