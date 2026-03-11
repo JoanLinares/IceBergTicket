@@ -207,6 +207,22 @@ class FileModel:
         return updated is not None
 
     @staticmethod
+    def rename(file_id: int, owner_user_id: int, new_filename: str) -> bool:
+        """Renombra un archivo (solo propietario)."""
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE files SET filename = %s
+            WHERE id = %s AND owner_user_id = %s
+            RETURNING id
+        """, (new_filename, file_id, owner_user_id))
+        updated = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return updated is not None
+
+    @staticmethod
     def get_api_password_hash(file_id: int):
         """
         Devuelve (id, owner_user_id, filename, api_password_hash, storage_path, enc_nonce)

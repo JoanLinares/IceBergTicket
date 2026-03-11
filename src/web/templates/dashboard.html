@@ -17,7 +17,7 @@
     {% for f in files %}
     <a href="/explorer/{{ f.id }}" class="card card-hover db-card" style="text-decoration:none;color:inherit;display:block">
       <div class="flex justify-between items-center mb-1">
-        <span class="db-name">{{ f.filename }}</span>
+        <span class="db-name">{{ f.display_name }}</span>
         {% if f.level %}
         <span class="level-badge level-{{ f.level }}">{{ f.level }}</span>
         {% endif %}
@@ -55,6 +55,11 @@
           <div class="upload-icon">📄</div>
           <p id="uploadLabel">Arrastra tu archivo CSV aquí o haz clic para seleccionar</p>
           <input type="file" name="file" id="csvInput" accept=".csv">
+        </div>
+        <div class="input-group mt-1" id="nameGroup" style="display:none">
+          <label for="dbNameInput">Nombre de la base de datos</label>
+          <input class="input" type="text" name="db_name" id="dbNameInput"
+                 placeholder="Mi base de datos" maxlength="100">
         </div>
         <div id="uploadProgress" class="loading-overlay hidden">
           <span class="spinner"></span>&nbsp;Clasificando tickets con IA…
@@ -147,8 +152,15 @@ csvInput.addEventListener('change', onFileSelect);
 
 function onFileSelect() {
   if (csvInput.files.length) {
-    document.getElementById('uploadLabel').textContent = csvInput.files[0].name;
+    const fname = csvInput.files[0].name;
+    document.getElementById('uploadLabel').textContent = fname;
     uploadBtn.disabled = false;
+    const nameGroup = document.getElementById('nameGroup');
+    nameGroup.style.display = '';
+    const nameInput = document.getElementById('dbNameInput');
+    if (!nameInput.value) {
+      nameInput.value = fname.replace(/\.csv$/i, '');
+    }
   }
 }
 
