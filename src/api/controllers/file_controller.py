@@ -30,10 +30,11 @@ def upload_file():
     Flujo:
       1. Valida que sea un CSV
       2. Clasifica cada ticket con los modelos ML (tipo, idioma, nivel DW)
-      3. Crea un SQLite .db por nivel (BASIC / MEDIUM / PRO) con los datos clasificados
-      4. Cifra cada .db con AES-256-GCM y lo sube a Supabase Storage
-      5. Registra cada .db en public.files y public.user_files
-      6. Devuelve un resumen con los archivos creados
+      3. Determina el nivel óptimo (BASIC / MEDIUM / PRO) para todo el dataset
+      4. Crea UN solo SQLite .db con el esquema óptimo y TODOS los tickets
+      5. Cifra el .db con AES-256-GCM y lo sube a Supabase Storage
+      6. Registra el .db en public.files y public.user_files
+      7. Devuelve un resumen con el archivo creado
     """
     if "file" not in request.files:
         return jsonify({"error": "No se encontró el campo 'file' en la petición"}), 400
@@ -56,7 +57,7 @@ def upload_file():
     except Exception as exc:
         return jsonify({"error": f"Error en clasificación ML: {exc}"}), 500
 
-    # ── Paso 3: crear .db por nivel ───────────────────────────────────
+    # ── Paso 3: crear .db con el nivel óptimo ─────────────────────────
     try:
         db_files = DWService.create_databases(df)
     except Exception as exc:
@@ -65,13 +66,13 @@ def upload_file():
     if not db_files:
         return jsonify({"error": "No se generó ninguna base de datos (CSV sin tickets válidos)"}), 422
 
-    # ── Pasos 4-6: cifrar, subir y registrar cada .db ────────────────
+    # ── Pasos 4-6: cifrar, subir y registrar el .db ──────────────────
     base_name = f.filename.rsplit(".", 1)[0]
     created = []
 
     for level, db_bytes in db_files.items():
         filename  = f"{base_name}_{level}.db"
-        n_tickets = int((df["pred_level"] == level).sum())
+        n_tickets = len(df)
 
         try:
             meta = FileService.upload(db_bytes, filename, g.user_id)

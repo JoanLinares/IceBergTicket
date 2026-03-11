@@ -201,14 +201,14 @@ def upload():
         created.append({
             'filename': filename,
             'level':    level,
-            'n_tickets': int((df['pred_level'] == level).sum()),
+            'n_tickets': len(df),
             'api_key':  plain_api_key,
             'file_id':  file_id,
         })
 
     if created:
         session['upload_result'] = created
-        flash(f'Se crearon {len(created)} bases de datos correctamente', 'success')
+        flash(f'Base de datos {created[0]["level"]} creada con {created[0]["n_tickets"]} tickets', 'success')
 
     return redirect(url_for('web.dashboard'))
 
