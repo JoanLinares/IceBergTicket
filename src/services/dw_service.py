@@ -226,6 +226,103 @@ def _pro_schema(conn):
 
 _SCHEMA_MAP = {'BASIC': _basic_schema, 'MEDIUM': _medium_schema, 'PRO': _pro_schema}
 
+# ──────────────────────────────────────────────────────────────────────
+# Extracción de datos para upgrade de nivel
+# ──────────────────────────────────────────────────────────────────────
+
+def _extract_dataframe(conn: sqlite3.Connection, level: str) -> pd.DataFrame:
+    """Reconstruye un DataFrame desde un SQLite DW ya existente según su nivel."""
+    if level == 'BASIC':
+        rows = conn.execute("""
+            SELECT tt.subject, tt.description AS body,
+                   f.pred_type, f.pred_language,
+                   p.priority_name AS priority, s.status_name AS status,
+                   c.customer_name AS submitter_name, c.email AS submitter_email,
+                   a.agent_name, f.created_at
+            FROM fact_tickets f
+            JOIN ticket_text tt ON f.ticket_id = tt.ticket_id
+            JOIN dim_priority p ON f.priority_key = p.priority_key
+            JOIN dim_status   s ON f.status_key   = s.status_key
+            JOIN dim_customer c ON f.customer_key = c.customer_key
+            LEFT JOIN dim_agent a ON f.agent_key  = a.agent_key
+        """).fetchall()
+        cols = ['subject', 'body', 'pred_type', 'pred_language',
+                'priority', 'status', 'submitter_name', 'submitter_email',
+                'agent_name', 'created_at']
+
+    elif level == 'MEDIUM':
+        rows = conn.execute("""
+            SELECT tt.subject, tt.description AS body,
+                   dt.type_name AS pred_type, dl.language_code AS pred_language,
+                   p.priority_name AS priority, s.status_name AS status,
+                   c.customer_name AS submitter_name, c.email AS submitter_email,
+                   a.agent_name, f.created_at
+            FROM fact_tickets f
+            JOIN ticket_text  tt ON f.ticket_id    = tt.ticket_id
+            JOIN dim_type     dt ON f.type_key     = dt.type_key
+            JOIN dim_language dl ON f.language_key = dl.language_key
+            JOIN dim_priority  p ON f.priority_key = p.priority_key
+            JOIN dim_status    s ON f.status_key   = s.status_key
+            JOIN dim_customer  c ON f.customer_key = c.customer_key
+            LEFT JOIN dim_agent a ON f.agent_key   = a.agent_key
+        """).fetchall()
+        cols = ['subject', 'body', 'pred_type', 'pred_language',
+                'priority', 'status', 'submitter_name', 'submitter_email',
+                'agent_name', 'created_at']
+
+    else:  # PRO — extrae todo por completitud
+        rows = conn.execute("""
+            SELECT tt.subject, tt.body,
+                   dt.type_name AS pred_type, dl.language_code AS pred_language,
+                   p.priority_name AS priority, s.status_name AS status,
+                   q.queue_name AS queue,
+                   c.customer_name AS submitter_name, c.email AS submitter_email,
+                   a.agent_name, f.created_at, tt.answer
+            FROM fact_tickets f
+            JOIN ticket_text     tt ON f.ticket_id    = tt.ticket_id
+            JOIN dim_ticket_type dt ON f.type_key     = dt.type_key
+            JOIN dim_language    dl ON f.language_key = dl.language_key
+            JOIN dim_priority     p ON f.priority_key = p.priority_key
+            JOIN dim_status       s ON f.status_key   = s.status_key
+            JOIN dim_queue        q ON f.queue_key    = q.queue_key
+            JOIN dim_customer     c ON f.customer_key = c.customer_key
+            LEFT JOIN dim_agent   a ON f.agent_key    = a.agent_key
+        """).fetchall()
+        cols = ['subject', 'body', 'pred_type', 'pred_language',
+                'priority', 'status', 'queue',
+                'submitter_name', 'submitter_email', 'agent_name',
+                'created_at', 'answer']
+
+    return pd.DataFrame(rows, columns=cols)
+
+
+def extract_for_upgrade(db_bytes: bytes) -> tuple:
+    """
+    Detecta el nivel actual del SQLite DW y extrae sus datos como DataFrame.
+    Devuelve (current_level: str, df: pd.DataFrame).
+    Útil para construir un nuevo DW en un nivel superior sin perder información.
+    """
+    fd, tmp = tempfile.mkstemp(suffix='.db')
+    os.close(fd)
+    try:
+        with open(tmp, 'wb') as fh:
+            fh.write(db_bytes)
+        conn = sqlite3.connect(tmp)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if 'dim_queue' in tables:
+            level = 'PRO'
+        elif 'dim_type' in tables:
+            level = 'MEDIUM'
+        else:
+            level = 'BASIC'
+        df = _extract_dataframe(conn, level)
+        conn.close()
+    finally:
+        os.unlink(tmp)
+    return level, df
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers de dimensiones
@@ -626,7 +723,7 @@ def _choose_optimal_level(df: pd.DataFrame) -> str:
 class DWService:
 
     @staticmethod
-    def create_databases(df_classified: pd.DataFrame) -> Dict[str, bytes]:
+    def create_databases(df_classified: pd.DataFrame, force_level: str | None = None) -> Dict[str, bytes]:
         """
         Recibe el DataFrame clasificado por ML.
         Analiza las columnas del CSV para determinar el nivel mínimo de DW
@@ -639,7 +736,7 @@ class DWService:
         if df_classified.empty:
             return {}
 
-        level = _choose_optimal_level(df_classified)
+        level = force_level or _choose_optimal_level(df_classified)
         conn = sqlite3.connect(':memory:')
         _SCHEMA_MAP[level](conn)
         _insert_tickets(conn, level, df_classified)
