@@ -7,7 +7,7 @@
     <h1>Mis bases de datos</h1>
     <div class="dash-actions">
       <button class="btn btn-outline" onclick="openModal('joinModal')">🔗 Unirme con código</button>
-      <button class="btn btn-primary" onclick="openModal('uploadModal')">⬆ Subir CSV</button>
+      <button class="btn btn-primary" onclick="openModal('uploadModal')">⬆ Subir archivo</button>
     </div>
   </div>
 
@@ -37,7 +37,7 @@
   {% else %}
   <div class="empty-state">
     <h3>No tienes bases de datos</h3>
-    <p class="text-dim">Sube un CSV de tickets o únete con un código compartido</p>
+    <p class="text-dim">Sube un archivo de tickets o únete con un código compartido</p>
   </div>
   {% endif %}
 </div>
@@ -46,15 +46,15 @@
 <div class="modal-overlay hidden" id="uploadModal">
   <div class="modal">
     <div class="modal-header">
-      <h2>Subir CSV de tickets</h2>
+      <h2>Subir archivo de tickets</h2>
       <button class="modal-close" onclick="closeModal('uploadModal')">&times;</button>
     </div>
     <form method="POST" action="/dashboard/upload" enctype="multipart/form-data" id="uploadForm">
       <div class="modal-body">
         <div class="upload-area" id="uploadArea">
           <div class="upload-icon">📄</div>
-          <p id="uploadLabel">Arrastra tu archivo CSV aquí o haz clic para seleccionar</p>
-          <input type="file" name="file" id="csvInput" accept=".csv">
+          <p id="uploadLabel">Arrastra tu archivo aquí o haz clic para seleccionar</p>
+          <input type="file" name="file" id="csvInput" accept=".csv,.tsv,.json,.jsonl,.ndjson,.txt,.log,.parquet,.sql,.db,.sqlite,.sqlite3,.xlsx,.xls">
         </div>
         <div class="input-group mt-1" id="nameGroup" style="display:none">
           <label for="dbNameInput">Nombre de la base de datos</label>
@@ -159,7 +159,7 @@ function onFileSelect() {
     nameGroup.style.display = '';
     const nameInput = document.getElementById('dbNameInput');
     if (!nameInput.value) {
-      nameInput.value = fname.replace(/\.csv$/i, '');
+      nameInput.value = fname.replace(/\.[^/.]+$/, '');
     }
   }
 }

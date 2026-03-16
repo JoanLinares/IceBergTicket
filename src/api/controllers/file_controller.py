@@ -7,12 +7,9 @@ from werkzeug.security import generate_password_hash
 from src.api.middlewares.jwt_required import jwt_required
 from src.api.models.file_model import FileModel, UserFileModel
 from src.services.file_service import FileService
+from src.services.import_service import ImportService, SUPPORTED_EXTENSIONS_TEXT
 from src.services.ml_service import MLService
 from src.services.dw_service import DWService
-
-
-def _ext(filename: str) -> str:
-    return "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
 def _extract_level(filename: str) -> str | None:
@@ -25,10 +22,10 @@ def _extract_level(filename: str) -> str | None:
 def upload_file():
     """
     POST /files/upload
-    multipart/form-data  →  campo "file" con el CSV de tickets
+    multipart/form-data  →  campo "file" con dataset de tickets
 
     Flujo:
-      1. Valida que sea un CSV
+    1. Valida y parsea el archivo de entrada (csv/json/txt/parquet/sql/sqlite/excel)
       2. Clasifica cada ticket con los modelos ML (tipo, idioma, nivel DW)
       3. Determina el nivel óptimo (BASIC / MEDIUM / PRO) para todo el dataset
       4. Crea UN solo SQLite .db con el esquema óptimo y TODOS los tickets
@@ -44,16 +41,25 @@ def upload_file():
     if not f.filename:
         return jsonify({"error": "Nombre de archivo vacío"}), 400
 
-    if _ext(f.filename) != ".csv":
-        return jsonify({"error": "Solo se admiten archivos CSV"}), 400
+    if not ImportService.is_supported(f.filename):
+        return jsonify({
+            "error": f"Formato no soportado. Admitidos: {SUPPORTED_EXTENSIONS_TEXT}"
+        }), 400
 
-    csv_bytes = f.read()
-    if not csv_bytes:
+    file_bytes = f.read()
+    if not file_bytes:
         return jsonify({"error": "El archivo está vacío"}), 400
+
+    try:
+        df_input = ImportService.parse_to_dataframe(file_bytes, f.filename)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Error leyendo archivo: {exc}"}), 500
 
     # ── Paso 2: clasificar con ML ──────────────────────────────────────
     try:
-        df = MLService.get_instance().classify_csv(csv_bytes)
+        df = MLService.get_instance().classify_dataframe(df_input)
     except Exception as exc:
         return jsonify({"error": f"Error en clasificación ML: {exc}"}), 500
 
