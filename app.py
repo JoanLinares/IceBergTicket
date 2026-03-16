@@ -5,6 +5,7 @@ import os
 import psycopg2
 from dotenv import load_dotenv
 from flask import Flask
+from src.services.ml_service import MLService
 
 load_dotenv()
 
@@ -64,8 +65,18 @@ def test_connection():
         return False
 
 
+def warm_services():
+    """Preload heavy singletons so the first user request is faster."""
+    try:
+        MLService.get_instance()
+        print("ML models preloaded.")
+    except Exception as e:
+        print(f"Failed to preload ML models: {e}")
+
+
 if __name__ == "__main__":
     test_connection()
+    warm_services()
     port = int(os.getenv('PORT', 5000))
     print(f"⚡️ IBTicket running at http://localhost:{port}")
     app.run(host='0.0.0.0', port=port, debug=True)

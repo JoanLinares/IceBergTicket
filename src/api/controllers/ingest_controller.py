@@ -18,7 +18,7 @@ from src.services.ml_service import MLService
 from src.services.dw_service import (
     _upsert_date, _upsert_customer, _upsert_agent,
     _upsert_dim_text, _upsert_language, _insert_tags,
-    _conn_to_bytes, decompress_db, compress_db, _to_epoch, LANG_NAMES,
+    _conn_to_bytes, decompress_db, compress_db_fast, _to_epoch, LANG_NAMES,
 )
 
 import os
@@ -68,7 +68,7 @@ def _save_back(conn: sqlite3.Connection, tmp: str, file_id: int):
     conn.close()
     with open(tmp, 'rb') as f:
         raw_bytes = f.read()
-    new_bytes = compress_db(raw_bytes)
+    new_bytes = compress_db_fast(raw_bytes)
     row = FileModel.get_api_password_hash(file_id)
     storage_path = row[4]
     up = FileService.upload_overwrite(new_bytes, storage_path)
@@ -111,9 +111,7 @@ def ingest_tickets(file_id: int, api_key: str):
     try:
         import pandas as pd
         df_in = pd.DataFrame(tickets)
-        df_classified = MLService.get_instance().classify_csv(
-            df_in.to_csv(index=False).encode()
-        )
+        df_classified = MLService.get_instance().classify_dataframe(df_in)
     except Exception as exc:
         return jsonify({"error": f"Error en clasificación ML: {exc}"}), 500
 

@@ -666,6 +666,17 @@ def compress_db(raw: bytes) -> bytes:
     return b'LMDB' + lzma.compress(raw, preset=9)
 
 
+def compress_db_fast(raw: bytes) -> bytes:
+    """
+    Fast compression for frequent incremental updates.
+
+    Uses zlib instead of LZMA to reduce latency when re-writing the whole
+    SQLite blob after inserting/updating a small number of tickets.
+    Tradeoff: slightly larger payloads than the archival LMDB format.
+    """
+    return b'ZLDB' + zlib.compress(raw, level=3)
+
+
 def decompress_db(data: bytes) -> bytes:
     """Descomprime bytes de un .db creado por _conn_to_bytes.
     Soporta LMDB (lzma), ZLDB (zlib), y raw SQLite (retrocompatible).

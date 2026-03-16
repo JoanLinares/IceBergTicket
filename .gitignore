@@ -14,3 +14,6 @@ venv/
 # Model artifacts
 *.pkl
 *.joblib
+
+# Local test web (excluded from git)
+testWebAPI/
