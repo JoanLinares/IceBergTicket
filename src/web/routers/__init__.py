@@ -15,9 +15,10 @@ from src.api.models.user_model import UserModel
 from src.services.auth_service import AuthService
 from src.services.JWT_service import JWT_SECRET
 from src.services.ml_service import MLService
-from src.services.dw_service import DWService
+from src.services.dw_service import DWService, extract_for_upgrade
 from src.services.file_service import FileService
-from src.services.db_session_service import DBSessionService
+from src.services.db_session_service import DBSessionService, _fetch_db
+from src.services.import_service import ImportService, SUPPORTED_EXTENSIONS_TEXT
 
 web_blueprint = Blueprint('web', __name__)
 
@@ -157,17 +158,30 @@ def upload():
         return redirect(url_for('web.dashboard'))
 
     f = request.files['file']
-    if not f.filename or not f.filename.lower().endswith('.csv'):
-        flash('Solo se admiten archivos CSV', 'error')
+    if not f.filename:
+        flash('Nombre de archivo vacío', 'error')
         return redirect(url_for('web.dashboard'))
 
-    csv_bytes = f.read()
-    if not csv_bytes:
+    if not ImportService.is_supported(f.filename):
+        flash(f'Formato no soportado. Admitidos: {SUPPORTED_EXTENSIONS_TEXT}', 'error')
+        return redirect(url_for('web.dashboard'))
+
+    file_bytes = f.read()
+    if not file_bytes:
         flash('El archivo está vacío', 'error')
         return redirect(url_for('web.dashboard'))
 
     try:
-        df = MLService.get_instance().classify_csv(csv_bytes)
+        df_input = ImportService.parse_to_dataframe(file_bytes, f.filename)
+    except ValueError as exc:
+        flash(str(exc), 'error')
+        return redirect(url_for('web.dashboard'))
+    except Exception as exc:
+        flash(f'Error leyendo archivo: {exc}', 'error')
+        return redirect(url_for('web.dashboard'))
+
+    try:
+        df = MLService.get_instance().classify_dataframe(df_input)
     except Exception as exc:
         flash(f'Error en clasificación ML: {exc}', 'error')
         return redirect(url_for('web.dashboard'))
@@ -253,6 +267,71 @@ def rename_db(file_id):
     ok = FileModel.rename(file_id, session['user_id'], new_filename)
     if not ok:
         return jsonify({'error': 'No se pudo renombrar'}), 500
+
+
+@web_blueprint.route('/explorer/<int:file_id>/upgrade', methods=['POST'])
+@login_required
+def upgrade_db(file_id):
+    """Actualiza el nivel del DW (BASIC→MEDIUM, BASIC→PRO, MEDIUM→PRO) sin perder datos."""
+    row = _check_access(file_id)
+    if not row or not row[9]:
+        return jsonify({'error': 'Solo el propietario puede actualizar el nivel'}), 403
+
+    data   = request.get_json(silent=True) or {}
+    target = data.get('target_level', '').upper()
+    if target not in ('MEDIUM', 'PRO'):
+        return jsonify({'error': 'Nivel inválido. Solo se admite MEDIUM o PRO'}), 400
+
+    _LEVELS = {'BASIC': 1, 'MEDIUM': 2, 'PRO': 3}
+
+    try:
+        db_bytes, meta = _fetch_db(file_id, session['user_id'])
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+    except Exception as exc:
+        return jsonify({'error': f'Error accediendo a la base de datos: {exc}'}), 500
+
+    try:
+        current_level, df = extract_for_upgrade(db_bytes)
+    except Exception as exc:
+        return jsonify({'error': f'Error leyendo la base de datos: {exc}'}), 500
+
+    if _LEVELS.get(target, 0) <= _LEVELS.get(current_level, 0):
+        return jsonify({
+            'error': f'Ya estás en nivel {current_level}. Solo se permiten mejoras, no degradaciones.'
+        }), 400
+
+    try:
+        new_db_files = DWService.create_databases(df, force_level=target)
+        new_db_bytes = new_db_files[target]
+    except Exception as exc:
+        return jsonify({'error': f'Error creando la base de datos actualizada: {exc}'}), 500
+
+    try:
+        ow = FileService.upload_overwrite(new_db_bytes, meta['storage_path'])
+    except Exception as exc:
+        return jsonify({'error': f'Error guardando la base de datos: {exc}'}), 500
+
+    FileModel.update_encryption_meta(file_id, ow['sha256'], ow['enc_nonce'], ow['size_bytes'])
+
+    current_filename = row[1]
+    new_filename = re.sub(
+        r'_(BASIC|MEDIUM|PRO)(\.db)$',
+        lambda m: f'_{target}{m.group(2)}',
+        current_filename,
+        flags=re.IGNORECASE,
+    )
+    if new_filename != current_filename:
+        FileModel.rename(file_id, session['user_id'], new_filename)
+
+    return jsonify({
+        'ok':             True,
+        'previous_level': current_level,
+        'new_level':      target,
+        'new_size':       ow['size_bytes'],
+        'new_size_fmt':   _fmt_bytes(ow['size_bytes']),
+        'new_filename':   _display_name(new_filename),
+    })
 
     return jsonify({'filename': new_filename, 'display_name': _display_name(new_filename)})
 

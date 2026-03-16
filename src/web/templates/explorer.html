@@ -155,6 +155,34 @@
         </div>
 
         <!-- Delete -->
+
+                <!-- Upgrade level -->
+                {% if file.level and file.level != 'PRO' %}
+                <div class="settings-section">
+                  <h3>🚀 Mejorar nivel de almacenamiento</h3>
+                  {% if file.level == 'BASIC' %}
+                  <p class="text-sm text-dim mb-1">
+                    Tu base de datos usa el esquema <strong>BASIC</strong>. Actualizando a
+                    <strong>MEDIUM</strong> se normalizan tipo e idioma en dimensiones separadas,
+                    reduciendo el espacio en datasets grandes. No se pierde ningún dato.
+                  </p>
+                  <button class="btn btn-primary btn-sm" id="upgradeBtn" onclick="upgradeDB('MEDIUM')">
+                    ⬆ Actualizar a MEDIUM
+                  </button>
+                  {% elif file.level == 'MEDIUM' %}
+                  <p class="text-sm text-dim mb-1">
+                    Tu base de datos usa el esquema <strong>MEDIUM</strong>. Actualizando a
+                    <strong>PRO</strong> se añaden dimensiones de cola y etiquetas para un
+                    análisis más detallado. No se pierde ningún dato.
+                  </p>
+                  <button class="btn btn-primary btn-sm" id="upgradeBtn" onclick="upgradeDB('PRO')">
+                    ⬆ Actualizar a PRO
+                  </button>
+                  {% endif %}
+                  <p class="text-xs text-dim mt-1">Esta operación no se puede deshacer.</p>
+                </div>
+                {% endif %}
+
         <div class="settings-section">
           <h3>🗑 Zona peligrosa</h3>
           <p class="text-sm text-dim mb-1">Eliminar esta base de datos es irreversible.</p>
@@ -441,6 +469,20 @@ async function submitRename() {
     showToast('Nombre actualizado', 'success');
   } catch (err) { showToast(err.message, 'error'); }
   finally { btn.disabled = false; btn.textContent = 'Guardar'; }
+
+async function upgradeDB(target) {
+  if (!confirm(`¿Actualizar a nivel ${target}?\n\nSe reconstruirá la base de datos con el nuevo esquema. Esta operación no se puede deshacer.`)) return;
+  const btn = document.getElementById('upgradeBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Actualizando…'; }
+  try {
+    const res = await doPOST(`/explorer/${FILE_ID}/upgrade`, { target_level: target });
+    showToast(`Base de datos actualizada a ${res.new_level} · ${res.new_size_fmt}`, 'success');
+    setTimeout(() => location.reload(), 1500);
+  } catch (err) {
+    showToast(err.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = `⬆ Actualizar a ${target}`; }
+  }
+}
 }
 </script>
 {% endblock %}

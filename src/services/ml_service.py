@@ -72,6 +72,31 @@ class MLService:
     # API pública
     # ------------------------------------------------------------------
 
+    def classify_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clasifica un DataFrame ya cargado en memoria.
+
+        Añade:
+          pred_type     → tipo de ticket  (Incident / Request / Problem)
+          pred_language → idioma          (en / es / de / fr / pt)
+          pred_level    → nivel DW        (BASIC / MEDIUM / PRO)
+        """
+        X = self._build_features(df)
+
+        # Models were trained with string labels (y_type, y_language, y_snowflake
+        # are raw string arrays), so predict() already returns strings directly.
+        # label_encoders only encodes INPUT features (queue/priority/language),
+        # it is NOT used to decode model output predictions.
+        pred_type = self.model_type.predict(X)
+        pred_lang = self.model_language.predict(X)
+        pred_snow = self.model_snowflake.predict(X)
+
+        out = df.copy()
+        out['pred_type'] = pred_type
+        out['pred_language'] = pred_lang
+        out['pred_level'] = pred_snow
+        return out
+
     def classify_csv(self, csv_bytes: bytes) -> pd.DataFrame:
         """
         Lee un CSV y añade tres columnas:
@@ -83,21 +108,7 @@ class MLService:
             DataFrame original + columnas de predicción.
         """
         df = pd.read_csv(io.BytesIO(csv_bytes))
-        X  = self._build_features(df)
-
-        # Models were trained with string labels (y_type, y_language, y_snowflake
-        # are raw string arrays), so predict() already returns strings directly.
-        # label_encoders only encodes INPUT features (queue/priority/language),
-        # it is NOT used to decode model output predictions.
-        pred_type = self.model_type.predict(X)
-        pred_lang = self.model_language.predict(X)
-        pred_snow = self.model_snowflake.predict(X)
-
-        out = df.copy()
-        out['pred_type']     = pred_type
-        out['pred_language'] = pred_lang
-        out['pred_level']    = pred_snow
-        return out
+        return self.classify_dataframe(df)
 
     # ------------------------------------------------------------------
     # Construcción de features (compatible con el entrenamiento)
