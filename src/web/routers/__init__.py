@@ -268,6 +268,8 @@ def rename_db(file_id):
     if not ok:
         return jsonify({'error': 'No se pudo renombrar'}), 500
 
+    return jsonify({'filename': new_filename, 'display_name': _display_name(new_filename)})
+
 
 @web_blueprint.route('/explorer/<int:file_id>/upgrade', methods=['POST'])
 @login_required
@@ -302,8 +304,16 @@ def upgrade_db(file_id):
         }), 400
 
     try:
+        # Re-clasifica para reconstruir el DW objetivo con predicciones ML actuales.
+        df = MLService.get_instance().classify_dataframe(df)
+    except Exception as exc:
+        return jsonify({'error': f'Error en clasificación ML durante upgrade: {exc}'}), 500
+
+    try:
         new_db_files = DWService.create_databases(df, force_level=target)
-        new_db_bytes = new_db_files[target]
+        new_db_bytes = new_db_files.get(target)
+        if not new_db_bytes:
+            return jsonify({'error': 'No se pudo generar la base de datos de destino'}), 500
     except Exception as exc:
         return jsonify({'error': f'Error creando la base de datos actualizada: {exc}'}), 500
 
@@ -332,8 +342,6 @@ def upgrade_db(file_id):
         'new_size_fmt':   _fmt_bytes(ow['size_bytes']),
         'new_filename':   _display_name(new_filename),
     })
-
-    return jsonify({'filename': new_filename, 'display_name': _display_name(new_filename)})
 
 
 @web_blueprint.route('/dashboard/join', methods=['POST'])

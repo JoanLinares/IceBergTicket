@@ -469,6 +469,7 @@ async function submitRename() {
     showToast('Nombre actualizado', 'success');
   } catch (err) { showToast(err.message, 'error'); }
   finally { btn.disabled = false; btn.textContent = 'Guardar'; }
+}
 
 async function upgradeDB(target) {
   if (!confirm(`¿Actualizar a nivel ${target}?\n\nSe reconstruirá la base de datos con el nuevo esquema. Esta operación no se puede deshacer.`)) return;
@@ -482,7 +483,6 @@ async function upgradeDB(target) {
     showToast(err.message, 'error');
     if (btn) { btn.disabled = false; btn.textContent = `⬆ Actualizar a ${target}`; }
   }
-}
 }
 </script>
 {% endblock %}
