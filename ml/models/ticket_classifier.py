@@ -52,7 +52,9 @@ class TicketClassifier:
         self.scaler          = None
         self.label_encoders  = None   # decodificadores de etiquetas de salida
         self.tfidf           = None   # TF-IDF vectorizer para texto de entrada
+        self.tfidf_type      = None   # TF-IDF específico para tarea type (opcional)
         self.metadata        = None
+        self.type_feature_mode = 'combined_scaled'
 
         self._load_models()
         self._init_preprocessor()
@@ -102,6 +104,10 @@ class TicketClassifier:
                     self.tfidf = joblib.load(filepath)
                     print(f"✅ Cargado TF-IDF vectorizer:      {file}")
 
+                elif file == 'tfidf_vectorizer_type.pkl':
+                    self.tfidf_type = joblib.load(filepath)
+                    print(f"✅ Cargado TF-IDF tipo:            {file}")
+
                 elif 'metadata' in file:
                     with open(filepath, 'rb') as f:
                         self.metadata = pickle.load(f)
@@ -116,6 +122,12 @@ class TicketClassifier:
             if not self.tfidf:           missing.append('tfidf_vectorizer.pkl')
             if missing:
                 raise ValueError(f"Artefactos faltantes: {', '.join(missing)}")
+
+            if self.metadata:
+                self.type_feature_mode = self.metadata.get('feature_modes', {}).get('type', 'combined_scaled')
+                if self.type_feature_mode == 'text_tfidf_only' and self.tfidf_type is None:
+                    # Fallback seguro si falta artefacto opcional
+                    self.type_feature_mode = 'combined_scaled'
 
         except Exception as e:
             raise RuntimeError(f"Error cargando modelos: {str(e)}")
@@ -151,10 +163,20 @@ class TicketClassifier:
             dict con 'type', 'language', 'snowflake_level',
             'confidence_scores' y 'timestamp'.
         """
-        X        = self.preprocess(ticket_data)
+        X = self.preprocess(ticket_data)
         X_scaled = self.scaler.transform(X.reshape(1, -1))
 
-        type_pred      = self.model_type.predict(X_scaled)[0]
+        if self.type_feature_mode == 'text_tfidf_only' and self.tfidf_type is not None:
+            subject = str(ticket_data.get('subject', '') or '')
+            body = str(ticket_data.get('body', '') or '')
+            combined_text = (subject + ' ' + body).strip()
+            X_type = self.tfidf_type.transform([combined_text])
+            type_pred = self.model_type.predict(X_type)[0]
+            type_conf = self._get_confidence(self.model_type, X_type)
+        else:
+            type_pred = self.model_type.predict(X_scaled)[0]
+            type_conf = self._get_confidence(self.model_type, X_scaled)
+
         language_pred  = self.model_language.predict(X_scaled)[0]
         snowflake_pred = self.model_snowflake.predict(X_scaled)[0]
 
@@ -170,7 +192,7 @@ class TicketClassifier:
             'language':        str(language_pred),
             'snowflake_level': str(snowflake_pred),
             'confidence_scores': {
-                'type':      self._get_confidence(self.model_type,      X_scaled),
+                'type':      type_conf,
                 'language':  self._get_confidence(self.model_language,  X_scaled),
                 'snowflake': self._get_confidence(self.model_snowflake, X_scaled),
             },
