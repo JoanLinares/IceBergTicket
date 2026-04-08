@@ -50,6 +50,21 @@ def _truncate(text: str, max_len: int) -> str:
     return text[:max_len - 1] + '…'
 
 
+def _clean_text_value(value, default: str = '') -> str:
+    """Normaliza valores de texto evitando None/NaN/None-like en dimensiones."""
+    if value is None:
+        return default
+    try:
+        if pd.isnull(value):
+            return default
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not text or text.lower() in {'nan', 'none', 'null', 'nat'}:
+        return default
+    return text
+
+
 def _to_epoch(val) -> int:
     """Convierte un valor de fecha a Unix epoch (int). Compacto en SQLite."""
     if val is None:
@@ -234,16 +249,20 @@ def _extract_dataframe(conn: sqlite3.Connection, level: str) -> pd.DataFrame:
     """Reconstruye un DataFrame desde un SQLite DW ya existente según su nivel."""
     if level == 'BASIC':
         rows = conn.execute("""
-            SELECT tt.subject, tt.description AS body,
-                   f.pred_type, f.pred_language,
-                   p.priority_name AS priority, s.status_name AS status,
-                   c.customer_name AS submitter_name, c.email AS submitter_email,
+            SELECT COALESCE(tt.subject, '') AS subject,
+                   COALESCE(tt.description, '') AS body,
+                   COALESCE(NULLIF(TRIM(f.pred_type), ''), 'unknown') AS pred_type,
+                   COALESCE(NULLIF(TRIM(f.pred_language), ''), 'unknown') AS pred_language,
+                   COALESCE(p.priority_name, 'normal') AS priority,
+                   COALESCE(s.status_name, 'open') AS status,
+                   COALESCE(c.customer_name, 'Unknown') AS submitter_name,
+                   COALESCE(c.email, 'unknown@unknown.com') AS submitter_email,
                    a.agent_name, f.created_at
             FROM fact_tickets f
-            JOIN ticket_text tt ON f.ticket_id = tt.ticket_id
-            JOIN dim_priority p ON f.priority_key = p.priority_key
-            JOIN dim_status   s ON f.status_key   = s.status_key
-            JOIN dim_customer c ON f.customer_key = c.customer_key
+            LEFT JOIN ticket_text tt ON f.ticket_id = tt.ticket_id
+            LEFT JOIN dim_priority p ON f.priority_key = p.priority_key
+            LEFT JOIN dim_status   s ON f.status_key   = s.status_key
+            LEFT JOIN dim_customer c ON f.customer_key = c.customer_key
             LEFT JOIN dim_agent a ON f.agent_key  = a.agent_key
         """).fetchall()
         cols = ['subject', 'body', 'pred_type', 'pred_language',
@@ -252,18 +271,22 @@ def _extract_dataframe(conn: sqlite3.Connection, level: str) -> pd.DataFrame:
 
     elif level == 'MEDIUM':
         rows = conn.execute("""
-            SELECT tt.subject, tt.description AS body,
-                   dt.type_name AS pred_type, dl.language_code AS pred_language,
-                   p.priority_name AS priority, s.status_name AS status,
-                   c.customer_name AS submitter_name, c.email AS submitter_email,
+             SELECT COALESCE(tt.subject, '') AS subject,
+                 COALESCE(tt.description, '') AS body,
+                 COALESCE(NULLIF(TRIM(dt.type_name), ''), 'unknown') AS pred_type,
+                 COALESCE(NULLIF(TRIM(dl.language_code), ''), 'unknown') AS pred_language,
+                 COALESCE(p.priority_name, 'normal') AS priority,
+                 COALESCE(s.status_name, 'open') AS status,
+                 COALESCE(c.customer_name, 'Unknown') AS submitter_name,
+                 COALESCE(c.email, 'unknown@unknown.com') AS submitter_email,
                    a.agent_name, f.created_at
             FROM fact_tickets f
-            JOIN ticket_text  tt ON f.ticket_id    = tt.ticket_id
-            JOIN dim_type     dt ON f.type_key     = dt.type_key
-            JOIN dim_language dl ON f.language_key = dl.language_key
-            JOIN dim_priority  p ON f.priority_key = p.priority_key
-            JOIN dim_status    s ON f.status_key   = s.status_key
-            JOIN dim_customer  c ON f.customer_key = c.customer_key
+             LEFT JOIN ticket_text  tt ON f.ticket_id    = tt.ticket_id
+             LEFT JOIN dim_type     dt ON f.type_key     = dt.type_key
+             LEFT JOIN dim_language dl ON f.language_key = dl.language_key
+             LEFT JOIN dim_priority  p ON f.priority_key = p.priority_key
+             LEFT JOIN dim_status    s ON f.status_key   = s.status_key
+             LEFT JOIN dim_customer  c ON f.customer_key = c.customer_key
             LEFT JOIN dim_agent a ON f.agent_key   = a.agent_key
         """).fetchall()
         cols = ['subject', 'body', 'pred_type', 'pred_language',
@@ -272,20 +295,24 @@ def _extract_dataframe(conn: sqlite3.Connection, level: str) -> pd.DataFrame:
 
     else:  # PRO — extrae todo por completitud
         rows = conn.execute("""
-            SELECT tt.subject, tt.body,
-                   dt.type_name AS pred_type, dl.language_code AS pred_language,
-                   p.priority_name AS priority, s.status_name AS status,
-                   q.queue_name AS queue,
-                   c.customer_name AS submitter_name, c.email AS submitter_email,
+             SELECT COALESCE(tt.subject, '') AS subject,
+                 COALESCE(tt.body, '') AS body,
+                 COALESCE(NULLIF(TRIM(dt.type_name), ''), 'unknown') AS pred_type,
+                 COALESCE(NULLIF(TRIM(dl.language_code), ''), 'unknown') AS pred_language,
+                 COALESCE(p.priority_name, 'normal') AS priority,
+                 COALESCE(s.status_name, 'open') AS status,
+                 COALESCE(q.queue_name, 'general') AS queue,
+                 COALESCE(c.customer_name, 'Unknown') AS submitter_name,
+                 COALESCE(c.email, 'unknown@unknown.com') AS submitter_email,
                    a.agent_name, f.created_at, tt.answer
             FROM fact_tickets f
-            JOIN ticket_text     tt ON f.ticket_id    = tt.ticket_id
-            JOIN dim_ticket_type dt ON f.type_key     = dt.type_key
-            JOIN dim_language    dl ON f.language_key = dl.language_key
-            JOIN dim_priority     p ON f.priority_key = p.priority_key
-            JOIN dim_status       s ON f.status_key   = s.status_key
-            JOIN dim_queue        q ON f.queue_key    = q.queue_key
-            JOIN dim_customer     c ON f.customer_key = c.customer_key
+             LEFT JOIN ticket_text     tt ON f.ticket_id    = tt.ticket_id
+             LEFT JOIN dim_ticket_type dt ON f.type_key     = dt.type_key
+             LEFT JOIN dim_language    dl ON f.language_key = dl.language_key
+             LEFT JOIN dim_priority     p ON f.priority_key = p.priority_key
+             LEFT JOIN dim_status       s ON f.status_key   = s.status_key
+             LEFT JOIN dim_queue        q ON f.queue_key    = q.queue_key
+             LEFT JOIN dim_customer     c ON f.customer_key = c.customer_key
             LEFT JOIN dim_agent   a ON f.agent_key    = a.agent_key
         """).fetchall()
         cols = ['subject', 'body', 'pred_type', 'pred_language',
@@ -296,10 +323,22 @@ def _extract_dataframe(conn: sqlite3.Connection, level: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
-def extract_for_upgrade(db_bytes: bytes) -> tuple:
+def _count_fact_tickets(conn: sqlite3.Connection) -> int:
+    """Cuenta filas en fact_tickets si existe, si no devuelve 0."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fact_tickets'"
+    ).fetchone()
+    if not exists:
+        return 0
+    row = conn.execute("SELECT COUNT(*) FROM fact_tickets").fetchone()
+    return int(row[0] if row else 0)
+
+
+def extract_for_upgrade(db_bytes: bytes, include_stats: bool = False):
     """
     Detecta el nivel actual del SQLite DW y extrae sus datos como DataFrame.
-    Devuelve (current_level: str, df: pd.DataFrame).
+    Devuelve (current_level: str, df: pd.DataFrame)
+    o (current_level, df, stats) si include_stats=True.
     Útil para construir un nuevo DW en un nivel superior sin perder información.
     """
     fd, tmp = tempfile.mkstemp(suffix='.db')
@@ -317,10 +356,18 @@ def extract_for_upgrade(db_bytes: bytes) -> tuple:
             level = 'MEDIUM'
         else:
             level = 'BASIC'
+        source_ticket_count = _count_fact_tickets(conn)
         df = _extract_dataframe(conn, level)
         conn.close()
     finally:
         os.unlink(tmp)
+    if include_stats:
+        stats = {
+            'source_ticket_count': source_ticket_count,
+            'extracted_ticket_count': int(len(df)),
+            'dropped_ticket_count': int(max(source_ticket_count - len(df), 0)),
+        }
+        return level, df, stats
     return level, df
 
 
@@ -573,15 +620,30 @@ def _insert_tickets(conn, level: str, subset: pd.DataFrame):
         agent_key    = _upsert_agent(conn,
                                      row.get(agent_col) if agent_col else None,
                                      row.get('_agent_team') if '_agent_team' in row.index else None)
-        prio_val   = str(row.get(prio_col, 'normal')).lower() if prio_col else 'normal'
-        status_val = str(row.get(status_col, 'open')).lower() if status_col else 'open'
-        pred_type  = str(row.get('pred_type', ''))
-        pred_lang  = str(row.get('pred_language', ''))
+        prio_val = _clean_text_value(
+            row.get(prio_col, 'normal') if prio_col else 'normal',
+            default='normal',
+        ).lower()
+        status_val = _clean_text_value(
+            row.get(status_col, 'open') if status_col else 'open',
+            default='open',
+        ).lower()
+        pred_type = _clean_text_value(row.get('pred_type', ''), default='unknown')
+        pred_lang = _clean_text_value(row.get('pred_language', ''), default='unknown')
         created_ts = _to_epoch(row.get(date_col) if date_col else None)
 
-        subj_text   = _truncate(str(row.get(subj_col,   '')) if subj_col   else '', _MAX_SUBJECT_LEN)
-        body_text   = _truncate(str(row.get(body_col,   '')) if body_col   else '', _MAX_BODY_LEN)
-        answer_text = _truncate(str(row.get(answer_col, '')) if answer_col else '', _MAX_ANSWER_LEN)
+        subj_text = _truncate(
+            _clean_text_value(row.get(subj_col, '') if subj_col else '', default=''),
+            _MAX_SUBJECT_LEN,
+        )
+        body_text = _truncate(
+            _clean_text_value(row.get(body_col, '') if body_col else '', default=''),
+            _MAX_BODY_LEN,
+        )
+        answer_text = _truncate(
+            _clean_text_value(row.get(answer_col, '') if answer_col else '', default=''),
+            _MAX_ANSWER_LEN,
+        )
 
         if level == 'BASIC':
             priority_key = _cached_upsert_dim('dim_priority', 'priority_name', 'priority_key', prio_val)
@@ -616,7 +678,10 @@ def _insert_tickets(conn, level: str, subset: pd.DataFrame):
             language_key = _cached_language(pred_lang)
             priority_key = _cached_upsert_dim('dim_priority',    'priority_name', 'priority_key', prio_val)
             status_key   = _cached_upsert_dim('dim_status',      'status_name',   'status_key',   status_val)
-            queue_val    = str(row.get(queue_col, 'general')) if queue_col else 'general'
+            queue_val = _clean_text_value(
+                row.get(queue_col, 'general') if queue_col else 'general',
+                default='general',
+            )
             queue_key    = _cached_upsert_dim('dim_queue',        'queue_name',    'queue_key',    queue_val)
             wc_subj      = len(subj_text.split())
             wc_body      = len(body_text.split())
@@ -687,6 +752,22 @@ def decompress_db(data: bytes) -> bytes:
     if prefix == b'ZLDB':
         return zlib.decompress(data[4:])
     return data
+
+
+def count_tickets_in_db_bytes(db_bytes: bytes) -> int:
+    """Cuenta tickets en fact_tickets a partir de bytes comprimidos o raw del DB."""
+    raw = decompress_db(db_bytes)
+    fd, tmp = tempfile.mkstemp(suffix='.db')
+    os.close(fd)
+    try:
+        with open(tmp, 'wb') as fh:
+            fh.write(raw)
+        conn = sqlite3.connect(tmp)
+        count = _count_fact_tickets(conn)
+        conn.close()
+        return count
+    finally:
+        os.unlink(tmp)
 
 
 # ──────────────────────────────────────────────────────────────────────
