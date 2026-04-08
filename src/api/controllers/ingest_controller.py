@@ -23,6 +23,7 @@ from src.services.dw_service import (
 
 import os
 import tempfile
+import re
 
 
 def _authenticate(file_id: int, api_key: str):
@@ -76,6 +77,88 @@ def _save_back(conn: sqlite3.Connection, tmp: str, file_id: int):
     os.unlink(tmp)
 
 
+def _clean_text(value) -> str:
+    """Normaliza texto de entrada (trim + colapsar espacios)."""
+    text = '' if value is None else str(value)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _build_subject_from_body(body_text: str) -> str:
+    """Genera un asunto corto a partir del cuerpo del ticket."""
+    body_text = _clean_text(body_text)
+    if not body_text:
+        return 'Nuevo ticket'
+
+    # Prioriza la primera frase
+    first_sentence = re.split(r'[\.!?\n]+', body_text, maxsplit=1)[0].strip()
+    if not first_sentence:
+        first_sentence = body_text
+
+    words = first_sentence.split()
+    if len(words) <= 12:
+        subject = first_sentence
+    else:
+        subject = ' '.join(words[:12]) + '...'
+
+    # Garantiza que subject no sea idéntico al body completo cuando sea posible
+    if subject.lower() == body_text.lower():
+        short_words = words[:8]
+        subject = (' '.join(short_words) + '...') if short_words else 'Nuevo ticket'
+
+    return subject[:160]
+
+
+def _infer_queue_from_type(pred_type: str) -> str:
+    """Mapea categoría predicha a una cola/departamento por defecto."""
+    value = _clean_text(pred_type).lower()
+    mapping = {
+        'error de sistema / rendimiento': 'technical_support',
+        'acceso y cuenta': 'account_support',
+        'hardware y red': 'network_support',
+        'facturación y pagos': 'billing',
+        'seguridad y privacidad': 'security',
+        'integración y software': 'integrations',
+        'estrategia y análisis': 'analytics',
+        'otros': 'general',
+    }
+    return mapping.get(value, 'general')
+
+
+def _normalize_ticket_payload(ticket: dict) -> dict:
+    """Convierte payload libre en esquema consistente para clasificación e inserción."""
+    if not isinstance(ticket, dict):
+        return {}
+
+    subject = _clean_text(ticket.get('subject') or ticket.get('title') or ticket.get('summary') or ticket.get('asunto'))
+    body_text = _clean_text(
+        ticket.get('body')
+        or ticket.get('description')
+        or ticket.get('message')
+        or ticket.get('text')
+        or ticket.get('content')
+        or ticket.get('mensaje')
+    )
+
+    # Si solo llega subject, usarlo también como base de body
+    if not body_text and subject:
+        body_text = subject
+
+    # Si no llega subject, generar uno automáticamente
+    if not subject:
+        subject = _build_subject_from_body(body_text)
+
+    # Si body queda vacío tras todo, usar subject para no perder contexto
+    if not body_text:
+        body_text = subject
+
+    normalized = dict(ticket)
+    normalized['subject'] = subject
+    normalized['body'] = body_text
+    normalized['priority'] = _clean_text(ticket.get('priority') or ticket.get('prioridad') or 'normal').lower()
+    normalized['queue'] = _clean_text(ticket.get('queue') or ticket.get('department') or ticket.get('category') or ticket.get('departamento'))
+    return normalized
+
+
 # ──────────────────────────────────────────────────────────────────────
 # POST /ingest/<file_id>/<api_key>/tickets
 # ──────────────────────────────────────────────────────────────────────
@@ -105,13 +188,38 @@ def ingest_tickets(file_id: int, api_key: str):
     if not tickets:
         return jsonify({"error": "No se proporcionaron tickets"}), 400
 
+    normalized_tickets = [_normalize_ticket_payload(t) for t in tickets]
+    normalized_tickets = [t for t in normalized_tickets if t]
+    if not normalized_tickets:
+        return jsonify({"error": "Formato de tickets inválido"}), 400
+
     level = _detect_level(file_row[2])  # filename
 
     # Clasificar con ML para obtener pred_type y pred_language
     try:
         import pandas as pd
-        df_in = pd.DataFrame(tickets)
+        df_in = pd.DataFrame(normalized_tickets)
         df_classified = MLService.get_instance().classify_dataframe(df_in)
+
+        # Enriquecimiento automático post-ML para routing interno
+        if 'pred_type' in df_classified.columns:
+            df_classified['pred_topic'] = df_classified['pred_type'].astype(str)
+            if 'queue' not in df_classified.columns:
+                df_classified['queue'] = ''
+            df_classified['queue'] = df_classified.apply(
+                lambda r: _clean_text(r.get('queue')) or _infer_queue_from_type(str(r.get('pred_type', ''))),
+                axis=1
+            )
+
+        # Garantizar subject/body válidos incluso si llega entrada mínima
+        df_classified['subject'] = df_classified.apply(
+            lambda r: _clean_text(r.get('subject')) or _build_subject_from_body(_clean_text(r.get('body'))),
+            axis=1
+        )
+        df_classified['body'] = df_classified.apply(
+            lambda r: _clean_text(r.get('body')) or _clean_text(r.get('subject')),
+            axis=1
+        )
     except Exception as exc:
         return jsonify({"error": f"Error en clasificación ML: {exc}"}), 500
 
@@ -122,8 +230,13 @@ def ingest_tickets(file_id: int, api_key: str):
         for _, row in df_classified.iterrows():
             pred_type = str(row.get('pred_type', ''))
             pred_lang = str(row.get('pred_language', ''))
-            subj = str(row.get('subject', row.get('title', '')))
-            body_text = str(row.get('body', row.get('description', row.get('message', ''))))
+            subj = _clean_text(row.get('subject', row.get('title', '')))
+            body_text = _clean_text(row.get('body', row.get('description', row.get('message', row.get('text', '')))))
+            if not subj:
+                subj = _build_subject_from_body(body_text)
+            if not body_text:
+                body_text = subj
+
             email = str(row.get('email', row.get('submitter_email', row.get('customer_email', ''))))
             name  = str(row.get('name', row.get('submitter_name', row.get('customer_name', ''))))
             prio  = str(row.get('priority', row.get('prioridad', 'normal'))).lower()
@@ -165,7 +278,7 @@ def ingest_tickets(file_id: int, api_key: str):
             else:  # PRO
                 type_key  = _upsert_dim_text(conn, 'dim_ticket_type', 'type_name', 'type_key', pred_type)
                 lang_key  = _upsert_language(conn, pred_lang)
-                queue_val = str(row.get('queue', row.get('department', 'general')))
+                queue_val = _clean_text(row.get('queue', row.get('department', ''))) or _infer_queue_from_type(pred_type)
                 queue_key = _upsert_dim_text(conn, 'dim_queue', 'queue_name', 'queue_key', queue_val)
                 conn.execute("""
                     INSERT INTO fact_tickets
@@ -192,7 +305,24 @@ def ingest_tickets(file_id: int, api_key: str):
         os.unlink(tmp)
         return jsonify({"error": f"Error insertando tickets: {exc}"}), 500
 
-    return jsonify({"inserted": len(inserted_ids), "ticket_ids": inserted_ids}), 201
+    preview = []
+    for idx, tid in enumerate(inserted_ids):
+        row = df_classified.iloc[idx]
+        preview.append({
+            'ticket_id': tid,
+            'subject': _clean_text(row.get('subject')),
+            'pred_language': str(row.get('pred_language', '')),
+            'pred_type': str(row.get('pred_type', '')),
+            'pred_topic': str(row.get('pred_topic', row.get('pred_type', ''))),
+            'pred_level': str(row.get('pred_level', level)),
+            'queue': _clean_text(row.get('queue')),
+        })
+
+    return jsonify({
+        "inserted": len(inserted_ids),
+        "ticket_ids": inserted_ids,
+        "enriched_preview": preview,
+    }), 201
 
 
 # ──────────────────────────────────────────────────────────────────────

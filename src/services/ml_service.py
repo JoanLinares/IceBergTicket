@@ -25,7 +25,7 @@ ARTIFACTS_DIR = os.getenv(
 # Aliases de columnas: mapea nombres estándar a posibles variantes en el CSV
 _COL_ALIASES = {
     'subject':          ['subject', 'title', 'summary', 'asunto'],
-    'body':             ['body', 'description', 'message', 'content', 'descripcion', 'mensaje'],
+    'body':             ['body', 'description', 'message', 'text', 'content', 'descripcion', 'mensaje'],
     'priority':         ['priority', 'prioridad'],
     'queue':            ['queue', 'department', 'category', 'departamento'],
     'language':         ['language', 'lang', 'idioma'],
@@ -96,7 +96,7 @@ class MLService:
         Clasifica un DataFrame ya cargado en memoria.
 
         Añade:
-          pred_type     → tipo de ticket  (Incident / Request / Problem)
+                    pred_type     → categoría/tipo de ticket (categorías explícitas)
           pred_language → idioma          (en / es / de / fr / pt)
           pred_level    → nivel DW        (BASIC / MEDIUM / PRO)
         """
@@ -124,7 +124,7 @@ class MLService:
     def classify_csv(self, csv_bytes: bytes) -> pd.DataFrame:
         """
         Lee un CSV y añade tres columnas:
-          pred_type     → tipo de ticket  (Incident / Request / Problem)
+                    pred_type     → categoría/tipo de ticket (categorías explícitas)
           pred_language → idioma          (en / es / de / fr / pt)
           pred_level    → nivel DW        (BASIC / MEDIUM / PRO)
 
