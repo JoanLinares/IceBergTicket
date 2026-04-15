@@ -14,6 +14,7 @@ import os
 import io
 import joblib
 import pickle
+import fnmatch
 import numpy as np
 import pandas as pd
 
@@ -25,7 +26,7 @@ ARTIFACTS_DIR = os.getenv(
 # Aliases de columnas: mapea nombres estándar a posibles variantes en el CSV
 _COL_ALIASES = {
     'subject':          ['subject', 'title', 'summary', 'asunto'],
-    'body':             ['body', 'description', 'message', 'content', 'descripcion', 'mensaje'],
+    'body':             ['body', 'description', 'message', 'text', 'content', 'descripcion', 'mensaje'],
     'priority':         ['priority', 'prioridad'],
     'queue':            ['queue', 'department', 'category', 'departamento'],
     'language':         ['language', 'lang', 'idioma'],
@@ -53,14 +54,80 @@ class MLService:
     _instance = None
 
     def __init__(self):
-        self.scaler          = joblib.load(os.path.join(ARTIFACTS_DIR, 'scaler.pkl'))
-        self.tfidf           = joblib.load(os.path.join(ARTIFACTS_DIR, 'tfidf_vectorizer.pkl'))
-        self.label_encoders  = joblib.load(os.path.join(ARTIFACTS_DIR, 'label_encoders.pkl'))
-        self.model_type      = joblib.load(os.path.join(ARTIFACTS_DIR, 'model_type_random_forest.pkl'))
-        self.model_language  = joblib.load(os.path.join(ARTIFACTS_DIR, 'model_language_naive_bayes.pkl'))
-        self.model_snowflake = joblib.load(os.path.join(ARTIFACTS_DIR, 'model_snowflake_gradient_boosting.pkl'))
-        with open(os.path.join(ARTIFACTS_DIR, 'model_metadata.pkl'), 'rb') as f:
-            self.metadata = pickle.load(f)
+        metadata_path = os.path.join(ARTIFACTS_DIR, 'model_metadata.pkl')
+        self.metadata = {}
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'rb') as f:
+                self.metadata = pickle.load(f)
+
+        model_files = self.metadata.get('model_files', {}) if isinstance(self.metadata, dict) else {}
+
+        self.type_feature_mode = (
+            self.metadata.get('feature_modes', {}).get('type', 'combined_scaled')
+        )
+
+        self.scaler = joblib.load(os.path.join(ARTIFACTS_DIR, 'scaler.pkl'))
+        self.tfidf = joblib.load(os.path.join(ARTIFACTS_DIR, 'tfidf_vectorizer.pkl'))
+        self.label_encoders = joblib.load(os.path.join(ARTIFACTS_DIR, 'label_encoders.pkl'))
+        self.model_type = self._load_model_artifact(
+            preferred_file=model_files.get('type'),
+            fallback_exact=['model_type_random_forest.pkl'],
+            fallback_patterns=['model_type_*.pkl'],
+        )
+        self.model_language = self._load_model_artifact(
+            preferred_file=model_files.get('language'),
+            fallback_exact=['model_language_naive_bayes.pkl'],
+            fallback_patterns=['model_language_*.pkl'],
+        )
+        self.model_snowflake = self._load_model_artifact(
+            preferred_file=model_files.get('snowflake'),
+            fallback_exact=['model_snowflake_gradient_boosting.pkl'],
+            fallback_patterns=['model_snowflake_*.pkl'],
+        )
+
+        self.tfidf_type = None
+        tfidf_type_file = self.metadata.get('model_files', {}).get('tfidf_type')
+        if self.type_feature_mode == 'text_tfidf_only':
+            candidate = tfidf_type_file or 'tfidf_vectorizer_type.pkl'
+            tfidf_type_path = os.path.join(ARTIFACTS_DIR, candidate)
+            if os.path.exists(tfidf_type_path):
+                self.tfidf_type = joblib.load(tfidf_type_path)
+            else:
+                # Fallback seguro para no romper predicción si falta el artefacto nuevo.
+                self.type_feature_mode = 'combined_scaled'
+
+    def _load_model_artifact(
+        self,
+        preferred_file: str | None,
+        fallback_exact: list[str] | None = None,
+        fallback_patterns: list[str] | None = None,
+    ):
+        """Carga un modelo priorizando metadata y con fallback por nombre/patrón."""
+        fallback_exact = fallback_exact or []
+        fallback_patterns = fallback_patterns or []
+
+        candidate_names = []
+        if preferred_file:
+            candidate_names.append(preferred_file)
+        candidate_names.extend(fallback_exact)
+
+        for name in candidate_names:
+            path = os.path.join(ARTIFACTS_DIR, name)
+            if os.path.exists(path):
+                return joblib.load(path)
+
+        try:
+            files = sorted(os.listdir(ARTIFACTS_DIR))
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f'No existe directorio de artefactos: {ARTIFACTS_DIR}') from exc
+
+        for pattern in fallback_patterns:
+            for filename in files:
+                if fnmatch.fnmatch(filename, pattern):
+                    return joblib.load(os.path.join(ARTIFACTS_DIR, filename))
+
+        searched = ', '.join(candidate_names + fallback_patterns)
+        raise FileNotFoundError(f'No se encontró artefacto de modelo. Buscado: {searched}')
 
     @classmethod
     def get_instance(cls) -> 'MLService':
@@ -77,17 +144,22 @@ class MLService:
         Clasifica un DataFrame ya cargado en memoria.
 
         Añade:
-          pred_type     → tipo de ticket  (Incident / Request / Problem)
+                    pred_type     → categoría/tipo de ticket (categorías explícitas)
           pred_language → idioma          (en / es / de / fr / pt)
           pred_level    → nivel DW        (BASIC / MEDIUM / PRO)
         """
-        X = self._build_features(df)
+        combined = self._get_text_combined(df)
+        X = self._build_features(df, combined)
 
         # Models were trained with string labels (y_type, y_language, y_snowflake
         # are raw string arrays), so predict() already returns strings directly.
         # label_encoders only encodes INPUT features (queue/priority/language),
         # it is NOT used to decode model output predictions.
-        pred_type = self.model_type.predict(X)
+        if self.type_feature_mode == 'text_tfidf_only' and self.tfidf_type is not None:
+            X_type = self.tfidf_type.transform(combined)
+            pred_type = self.model_type.predict(X_type)
+        else:
+            pred_type = self.model_type.predict(X)
         pred_lang = self.model_language.predict(X)
         pred_snow = self.model_snowflake.predict(X)
 
@@ -100,7 +172,7 @@ class MLService:
     def classify_csv(self, csv_bytes: bytes) -> pd.DataFrame:
         """
         Lee un CSV y añade tres columnas:
-          pred_type     → tipo de ticket  (Incident / Request / Problem)
+                    pred_type     → categoría/tipo de ticket (categorías explícitas)
           pred_language → idioma          (en / es / de / fr / pt)
           pred_level    → nivel DW        (BASIC / MEDIUM / PRO)
 
@@ -114,16 +186,26 @@ class MLService:
     # Construcción de features (compatible con el entrenamiento)
     # ------------------------------------------------------------------
 
-    def _build_features(self, df: pd.DataFrame) -> np.ndarray:
+    def _get_text_combined(self, df: pd.DataFrame) -> pd.Series:
+        """Construye texto combinado subject+body para inferencia."""
+        n = len(df)
+        subj_col = _find_col(df, 'subject')
+        body_col = _find_col(df, 'body')
+        subj_s = df[subj_col].fillna('') if subj_col else pd.Series([''] * n)
+        body_s = df[body_col].fillna('') if body_col else pd.Series([''] * n)
+        return (subj_s + ' ' + body_s).str.strip()
+
+    def _build_features(self, df: pd.DataFrame, combined: pd.Series | None = None) -> np.ndarray:
         n        = len(df)
         expected = self.scaler.n_features_in_
 
         # Texto combinado → TF-IDF
         subj_col = _find_col(df, 'subject')
         body_col = _find_col(df, 'body')
-        subj_s   = df[subj_col].fillna('') if subj_col else pd.Series([''] * n)
-        body_s   = df[body_col].fillna('') if body_col else pd.Series([''] * n)
-        combined = (subj_s + ' ' + body_s).str.strip()
+        subj_s = df[subj_col].fillna('') if subj_col else pd.Series([''] * n)
+        body_s = df[body_col].fillna('') if body_col else pd.Series([''] * n)
+        if combined is None:
+            combined = (subj_s + ' ' + body_s).str.strip()
 
         tfidf_arr = self.tfidf.transform(combined).toarray()   # (n, 100)
 
@@ -135,7 +217,7 @@ class MLService:
             combined.str.split().str.len().fillna(0).astype(int).values,
         ])                                                      # (n, 4)
 
-        # Features categóricas (solo las que existen en el CSV)
+        # Features categóricas (usando -1, 'unknown', si no existen)
         cat_parts = []
         for col in ['queue', 'priority', 'language']:
             real = _find_col(df, col)
@@ -145,6 +227,9 @@ class MLService:
                     lambda x, _le=le: int(_le.transform([x])[0]) if x in _le.classes_ else -1
                 ).values.reshape(-1, 1)
                 cat_parts.append(enc)
+            else:
+                # Si falta la columna, la codificamos como -1 (fuera de vocabulario)
+                cat_parts.append(np.full((n, 1), -1))
 
         parts = cat_parts + [length_arr, tfidf_arr]
         X = np.hstack(parts).astype(float)

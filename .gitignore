@@ -17,3 +17,8 @@ venv/
 
 # Local test web (excluded from git)
 testWebAPI/
+
+# Large dataset files (exceeds GitHub file size limits)
+ml/data/processed/dataset_with_explicit_categories.csv
+ml/data/test_dataset_100k.csv
+ml/data/dataset_basic_upgrade_demo.jsonl

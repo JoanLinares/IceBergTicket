@@ -15,7 +15,7 @@ from src.api.models.user_model import UserModel
 from src.services.auth_service import AuthService
 from src.services.JWT_service import JWT_SECRET
 from src.services.ml_service import MLService
-from src.services.dw_service import DWService, extract_for_upgrade
+from src.services.dw_service import DWService, extract_for_upgrade, count_tickets_in_db_bytes
 from src.services.file_service import FileService
 from src.services.db_session_service import DBSessionService, _fetch_db
 from src.services.import_service import ImportService, SUPPORTED_EXTENSIONS_TEXT
@@ -294,9 +294,26 @@ def upgrade_db(file_id):
         return jsonify({'error': f'Error accediendo a la base de datos: {exc}'}), 500
 
     try:
-        current_level, df = extract_for_upgrade(db_bytes)
+        current_level, df, upgrade_stats = extract_for_upgrade(db_bytes, include_stats=True)
     except Exception as exc:
         return jsonify({'error': f'Error leyendo la base de datos: {exc}'}), 500
+
+    source_tickets = upgrade_stats.get('source_ticket_count', 0)
+    extracted_tickets = upgrade_stats.get('extracted_ticket_count', 0)
+    dropped_tickets = upgrade_stats.get('dropped_ticket_count', 0)
+
+    if source_tickets > 0 and extracted_tickets != source_tickets:
+        return jsonify({
+            'error': (
+                'Se detectó inconsistencia al extraer tickets para upgrade. '
+                'No se aplicaron cambios para evitar pérdida de datos.'
+            ),
+            'integrity': {
+                'source_ticket_count': source_tickets,
+                'extracted_ticket_count': extracted_tickets,
+                'dropped_ticket_count': dropped_tickets,
+            },
+        }), 409
 
     if _LEVELS.get(target, 0) <= _LEVELS.get(current_level, 0):
         return jsonify({
@@ -314,6 +331,19 @@ def upgrade_db(file_id):
         new_db_bytes = new_db_files.get(target)
         if not new_db_bytes:
             return jsonify({'error': 'No se pudo generar la base de datos de destino'}), 500
+        rebuilt_tickets = count_tickets_in_db_bytes(new_db_bytes)
+        if rebuilt_tickets != extracted_tickets:
+            return jsonify({
+                'error': (
+                    'La base reconstruida no conserva el mismo número de tickets. '
+                    'Upgrade cancelado para proteger la integridad de datos.'
+                ),
+                'integrity': {
+                    'source_ticket_count': source_tickets,
+                    'extracted_ticket_count': extracted_tickets,
+                    'rebuilt_ticket_count': rebuilt_tickets,
+                },
+            }), 409
     except Exception as exc:
         return jsonify({'error': f'Error creando la base de datos actualizada: {exc}'}), 500
 
@@ -341,6 +371,15 @@ def upgrade_db(file_id):
         'new_size':       ow['size_bytes'],
         'new_size_fmt':   _fmt_bytes(ow['size_bytes']),
         'new_filename':   _display_name(new_filename),
+        'integrity': {
+            'source_ticket_count': source_tickets,
+            'extracted_ticket_count': extracted_tickets,
+            'rebuilt_ticket_count': rebuilt_tickets,
+        },
+        'preserved_credentials': {
+            'api_key_hash': True,
+            'share_code': True,
+        },
     })
 
 
