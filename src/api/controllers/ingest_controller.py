@@ -24,6 +24,109 @@ from src.services.dw_service import (
 import os
 import tempfile
 import re
+import unicodedata
+
+
+CANONICAL_TICKET_TYPES = [
+    'Estrategia y Análisis',
+    'Hardware y Red',
+    'Otros',
+    'Seguridad y Privacidad',
+    'Error de Sistema / Rendimiento',
+    'Facturación y Pagos',
+    'Acceso y Cuenta',
+    'Integración y Software',
+]
+
+_CANONICAL_BY_NORMALIZED = {
+    'estrategia y analisis': 'Estrategia y Análisis',
+    'hardware y red': 'Hardware y Red',
+    'otros': 'Otros',
+    'seguridad y privacidad': 'Seguridad y Privacidad',
+    'error de sistema y rendimiento': 'Error de Sistema / Rendimiento',
+    'error de sistema rendimiento': 'Error de Sistema / Rendimiento',
+    'facturacion y pagos': 'Facturación y Pagos',
+    'acceso y cuenta': 'Acceso y Cuenta',
+    'integracion y software': 'Integración y Software',
+}
+
+# Compatibilidad con etiquetas históricas/alternativas sin reentrenar modelos.
+_TYPE_ALIASES = {
+    # Cuentas y facturación
+    'account & billing management': 'Facturación y Pagos',
+    'account billing management': 'Facturación y Pagos',
+    'billing': 'Facturación y Pagos',
+    'billing and payments': 'Facturación y Pagos',
+    'payments': 'Facturación y Pagos',
+
+    # Acceso/cuenta y onboarding
+    'customer onboarding': 'Acceso y Cuenta',
+    'account access': 'Acceso y Cuenta',
+    'account': 'Acceso y Cuenta',
+
+    # Seguridad/compliance
+    'security operations': 'Seguridad y Privacidad',
+    'legal & compliance requests': 'Seguridad y Privacidad',
+    'legal compliance requests': 'Seguridad y Privacidad',
+    'legal and compliance requests': 'Seguridad y Privacidad',
+    'security': 'Seguridad y Privacidad',
+
+    # Integraciones/software/dev
+    'software development': 'Integración y Software',
+    'release management': 'Integración y Software',
+    'partner & vendor coordination': 'Integración y Software',
+    'partner vendor coordination': 'Integración y Software',
+    'partner and vendor coordination': 'Integración y Software',
+    'integration': 'Integración y Software',
+    'integrations': 'Integración y Software',
+
+    # Rendimiento/errores
+    'incident': 'Error de Sistema / Rendimiento',
+    'problem': 'Error de Sistema / Rendimiento',
+    'request': 'Integración y Software',
+    'data analytics reporting': 'Estrategia y Análisis',
+    'data analytics and reporting': 'Estrategia y Análisis',
+    'user experience design feedback': 'Otros',
+    'user experience and design feedback': 'Otros',
+    'network infrastructure': 'Hardware y Red',
+}
+
+_TYPE_KEYWORDS = {
+    'Facturación y Pagos': [
+        'facturacion', 'factura', 'pago', 'pagos', 'cobro', 'cobrado',
+        'reembolso', 'devolucion', 'invoice', 'billing', 'charge', 'charged',
+        'refund', 'payment', 'payments', 'card', 'tarjeta', 'microtransaccion',
+        'compra', 'comprado', 'tarifa', 'suscripcion', 'renovacion',
+    ],
+    'Acceso y Cuenta': [
+        'login', 'acceso', 'contrasena', 'password', 'cuenta', 'sign in',
+        'signin', 'sesion', 'bloqueada', 'bloqueo', 'usuario', 'auth',
+        'autenticacion', 'sso', 'registro',
+    ],
+    'Seguridad y Privacidad': [
+        'phishing', 'hack', 'hacked', 'breach', '2fa', 'mfa', 'seguridad',
+        'privacidad', 'data leak', 'vulnerabilidad', 'gdpr', 'rgpd', 'hipaa',
+        'compliance', 'compliant', 'audit',
+    ],
+    'Hardware y Red': [
+        'hardware', 'router', 'wifi', 'vpn', 'network', 'red', 'latencia',
+        'conexion', 'conectividad', 'switch', 'dns',
+    ],
+    'Integración y Software': [
+        'integracion', 'integration', 'api', 'sdk', 'plugin', 'jira', 'github',
+        'gitlab', 'zapier', 'salesforce', 'deployment', 'release', 'pipeline',
+        'ci/cd', 'software', 'app', 'aplicacion', 'etl',
+    ],
+    'Error de Sistema / Rendimiento': [
+        'error', 'fallo', 'bug', 'crash', 'timeout', 'caida', 'lento',
+        'rendimiento', 'performance', 'falla', 'intermitente', 'no funciona',
+        'se ha caido', 'outage',
+    ],
+    'Estrategia y Análisis': [
+        'analisis', 'analysis', 'dashboard', 'reporte', 'report', 'metricas',
+        'kpi', 'estrategia', 'planificacion', 'forecast',
+    ],
+}
 
 
 def _authenticate(file_id: int, api_key: str):
@@ -83,6 +186,17 @@ def _clean_text(value) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def _normalize_for_match(value: str) -> str:
+    """Normaliza texto para matching robusto (minúsculas + sin acentos)."""
+    cleaned = _clean_text(value).lower()
+    if not cleaned:
+        return ''
+    decomposed = unicodedata.normalize('NFD', cleaned)
+    without_accents = ''.join(ch for ch in decomposed if unicodedata.category(ch) != 'Mn')
+    alnum_space = re.sub(r'[^a-z0-9]+', ' ', without_accents)
+    return re.sub(r'\s+', ' ', alnum_space).strip()
+
+
 def _build_subject_from_body(body_text: str) -> str:
     """Genera un asunto corto a partir del cuerpo del ticket."""
     body_text = _clean_text(body_text)
@@ -110,18 +224,62 @@ def _build_subject_from_body(body_text: str) -> str:
 
 def _infer_queue_from_type(pred_type: str) -> str:
     """Mapea categoría predicha a una cola/departamento por defecto."""
-    value = _clean_text(pred_type).lower()
+    value = _canonicalize_ticket_type(pred_type, '', '')
     mapping = {
-        'error de sistema / rendimiento': 'technical_support',
-        'acceso y cuenta': 'account_support',
-        'hardware y red': 'network_support',
-        'facturación y pagos': 'billing',
-        'seguridad y privacidad': 'security',
-        'integración y software': 'integrations',
-        'estrategia y análisis': 'analytics',
-        'otros': 'general',
+        'Error de Sistema / Rendimiento': 'technical_support',
+        'Acceso y Cuenta': 'account_support',
+        'Hardware y Red': 'network_support',
+        'Facturación y Pagos': 'billing',
+        'Seguridad y Privacidad': 'security',
+        'Integración y Software': 'integrations',
+        'Estrategia y Análisis': 'analytics',
+        'Otros': 'general',
     }
     return mapping.get(value, 'general')
+
+
+def _score_type_from_text(subject: str, body_text: str) -> str | None:
+    """Puntuación por keywords para enrutar tickets a las 8 categorías de negocio."""
+    text = _normalize_for_match(f"{subject} {body_text}")
+    if not text:
+        return None
+
+    def score(words: list[str]) -> int:
+        points = 0
+        for kw in words:
+            kw_norm = _normalize_for_match(kw)
+            if kw_norm and kw_norm in text:
+                points += 1
+        return points
+
+    scores = {label: score(words) for label, words in _TYPE_KEYWORDS.items()}
+    best_label = max(scores, key=scores.get)
+    best_score = scores[best_label]
+    if best_score >= 1:
+        return best_label
+    return None
+
+
+def _canonicalize_ticket_type(pred_type: str, subject: str, body_text: str) -> str:
+    """Normaliza cualquier salida de modelo al catálogo fijo de 8 tipos."""
+    normalized_pred = _normalize_for_match(pred_type)
+
+    # Reglas basadas en texto primero: si hay señal clara en el ticket,
+    # prevalece sobre aliases de modelos antiguos.
+    inferred = _score_type_from_text(subject, body_text)
+    if inferred:
+        return inferred
+
+    # Si ya viene en catálogo canónico, respetarlo.
+    if normalized_pred in _CANONICAL_BY_NORMALIZED:
+        return _CANONICAL_BY_NORMALIZED[normalized_pred]
+
+    # Alias de modelos/datasets previos.
+    if normalized_pred in _TYPE_ALIASES:
+        return _TYPE_ALIASES[normalized_pred]
+
+    # Fall-back seguro dentro del catálogo.
+    return 'Otros'
 
 
 def _normalize_ticket_payload(ticket: dict) -> dict:
@@ -145,6 +303,10 @@ def _normalize_ticket_payload(ticket: dict) -> dict:
 
     # Si no llega subject, generar uno automáticamente
     if not subject:
+        subject = _build_subject_from_body(body_text)
+
+    # Si subject y body llegan iguales (común en integraciones), resumir subject.
+    if subject and body_text and _normalize_for_match(subject) == _normalize_for_match(body_text):
         subject = _build_subject_from_body(body_text)
 
     # Si body queda vacío tras todo, usar subject para no perder contexto
@@ -203,6 +365,13 @@ def ingest_tickets(file_id: int, api_key: str):
 
         # Enriquecimiento automático post-ML para routing interno
         if 'pred_type' in df_classified.columns:
+            # Normalización al catálogo fijo de 8 tipos.
+            def _override_type(row):
+                subj = _clean_text(row.get('subject'))
+                body = _clean_text(row.get('body'))
+                return _canonicalize_ticket_type(str(row.get('pred_type', '')), subj, body)
+
+            df_classified['pred_type'] = df_classified.apply(_override_type, axis=1)
             df_classified['pred_topic'] = df_classified['pred_type'].astype(str)
             if 'queue' not in df_classified.columns:
                 df_classified['queue'] = ''

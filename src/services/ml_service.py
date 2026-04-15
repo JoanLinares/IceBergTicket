@@ -14,6 +14,7 @@ import os
 import io
 import joblib
 import pickle
+import fnmatch
 import numpy as np
 import pandas as pd
 
@@ -59,6 +60,8 @@ class MLService:
             with open(metadata_path, 'rb') as f:
                 self.metadata = pickle.load(f)
 
+        model_files = self.metadata.get('model_files', {}) if isinstance(self.metadata, dict) else {}
+
         self.type_feature_mode = (
             self.metadata.get('feature_modes', {}).get('type', 'combined_scaled')
         )
@@ -66,9 +69,21 @@ class MLService:
         self.scaler = joblib.load(os.path.join(ARTIFACTS_DIR, 'scaler.pkl'))
         self.tfidf = joblib.load(os.path.join(ARTIFACTS_DIR, 'tfidf_vectorizer.pkl'))
         self.label_encoders = joblib.load(os.path.join(ARTIFACTS_DIR, 'label_encoders.pkl'))
-        self.model_type = joblib.load(os.path.join(ARTIFACTS_DIR, 'model_type_random_forest.pkl'))
-        self.model_language = joblib.load(os.path.join(ARTIFACTS_DIR, 'model_language_naive_bayes.pkl'))
-        self.model_snowflake = joblib.load(os.path.join(ARTIFACTS_DIR, 'model_snowflake_gradient_boosting.pkl'))
+        self.model_type = self._load_model_artifact(
+            preferred_file=model_files.get('type'),
+            fallback_exact=['model_type_random_forest.pkl'],
+            fallback_patterns=['model_type_*.pkl'],
+        )
+        self.model_language = self._load_model_artifact(
+            preferred_file=model_files.get('language'),
+            fallback_exact=['model_language_naive_bayes.pkl'],
+            fallback_patterns=['model_language_*.pkl'],
+        )
+        self.model_snowflake = self._load_model_artifact(
+            preferred_file=model_files.get('snowflake'),
+            fallback_exact=['model_snowflake_gradient_boosting.pkl'],
+            fallback_patterns=['model_snowflake_*.pkl'],
+        )
 
         self.tfidf_type = None
         tfidf_type_file = self.metadata.get('model_files', {}).get('tfidf_type')
@@ -80,6 +95,39 @@ class MLService:
             else:
                 # Fallback seguro para no romper predicción si falta el artefacto nuevo.
                 self.type_feature_mode = 'combined_scaled'
+
+    def _load_model_artifact(
+        self,
+        preferred_file: str | None,
+        fallback_exact: list[str] | None = None,
+        fallback_patterns: list[str] | None = None,
+    ):
+        """Carga un modelo priorizando metadata y con fallback por nombre/patrón."""
+        fallback_exact = fallback_exact or []
+        fallback_patterns = fallback_patterns or []
+
+        candidate_names = []
+        if preferred_file:
+            candidate_names.append(preferred_file)
+        candidate_names.extend(fallback_exact)
+
+        for name in candidate_names:
+            path = os.path.join(ARTIFACTS_DIR, name)
+            if os.path.exists(path):
+                return joblib.load(path)
+
+        try:
+            files = sorted(os.listdir(ARTIFACTS_DIR))
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f'No existe directorio de artefactos: {ARTIFACTS_DIR}') from exc
+
+        for pattern in fallback_patterns:
+            for filename in files:
+                if fnmatch.fnmatch(filename, pattern):
+                    return joblib.load(os.path.join(ARTIFACTS_DIR, filename))
+
+        searched = ', '.join(candidate_names + fallback_patterns)
+        raise FileNotFoundError(f'No se encontró artefacto de modelo. Buscado: {searched}')
 
     @classmethod
     def get_instance(cls) -> 'MLService':
@@ -169,7 +217,7 @@ class MLService:
             combined.str.split().str.len().fillna(0).astype(int).values,
         ])                                                      # (n, 4)
 
-        # Features categóricas (solo las que existen en el CSV)
+        # Features categóricas (usando -1, 'unknown', si no existen)
         cat_parts = []
         for col in ['queue', 'priority', 'language']:
             real = _find_col(df, col)
@@ -179,6 +227,9 @@ class MLService:
                     lambda x, _le=le: int(_le.transform([x])[0]) if x in _le.classes_ else -1
                 ).values.reshape(-1, 1)
                 cat_parts.append(enc)
+            else:
+                # Si falta la columna, la codificamos como -1 (fuera de vocabulario)
+                cat_parts.append(np.full((n, 1), -1))
 
         parts = cat_parts + [length_arr, tfidf_arr]
         X = np.hstack(parts).astype(float)
