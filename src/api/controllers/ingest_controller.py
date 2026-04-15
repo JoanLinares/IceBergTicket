@@ -26,6 +26,15 @@ import tempfile
 import re
 import unicodedata
 
+try:
+    from sumy.parsers.plaintext import PlaintextParser
+    from sumy.nlp.tokenizers import Tokenizer
+    from sumy.summarizers.lsa import LsaSummarizer
+except Exception:
+    PlaintextParser = None
+    Tokenizer = None
+    LsaSummarizer = None
+
 
 CANONICAL_TICKET_TYPES = [
     'Estrategia y Análisis',
@@ -128,6 +137,19 @@ _TYPE_KEYWORDS = {
     ],
 }
 
+_MAX_SUBJECT_WORDS = 6
+_MAX_SUBJECT_LEN = 72
+
+_GENERIC_INTRO_PREFIXES = (
+    'me pongo en contacto',
+    'les escribo',
+    'quiero reportar',
+    'quisiera reportar',
+    'buenas',
+    'hola',
+    'estimado',
+)
+
 
 def _authenticate(file_id: int, api_key: str):
     """
@@ -197,29 +219,131 @@ def _normalize_for_match(value: str) -> str:
     return re.sub(r'\s+', ' ', alnum_space).strip()
 
 
+def _short_subject(text: str, max_words: int = _MAX_SUBJECT_WORDS, max_len: int = _MAX_SUBJECT_LEN) -> str:
+    """Compacta un texto a un asunto muy corto sin copiar el cuerpo literal."""
+    clean = _clean_text(text)
+    if not clean:
+        return 'Nuevo ticket'
+
+    words = clean.split()
+    reduced = ' '.join(words[:max_words]).strip()
+    if len(reduced) > max_len:
+        reduced = reduced[:max_len].rstrip()
+    reduced = reduced.strip(' .,:;')
+
+    return reduced or 'Nuevo ticket'
+
+
+def _strip_intro_phrases(text: str) -> str:
+    """Elimina aperturas de cortesía que no aportan valor al asunto."""
+    clean = _clean_text(text)
+    if not clean:
+        return ''
+
+    patterns = [
+        r'^(hola|buenas(?:\s+dias|\s+tardes|\s+noches)?|estimad[oa]s?)\s*[:,\-]?\s*',
+        r'^(me\s+pongo\s+en\s+contacto(?:\s+con\s+ustedes)?(?:\s+porque)?|'
+        r'les\s+escribo(?:\s+porque)?|'
+        r'quiero\s+reportar(?:\s+que)?|'
+        r'quisiera\s+reportar(?:\s+que)?)\s*[:,\-]?\s*',
+    ]
+
+    out = clean
+    for pattern in patterns:
+        out = re.sub(pattern, '', out, flags=re.IGNORECASE)
+        out = _clean_text(out)
+
+    return out or clean
+
+
+def _intent_subject(body_text: str) -> str:
+    """Genera un asunto corto orientado a negocio según señales del texto."""
+    norm = _normalize_for_match(body_text)
+    if not norm:
+        return ''
+
+    inferred_type = _score_type_from_text('', body_text)
+
+    if inferred_type == 'Facturación y Pagos':
+        if any(k in norm for k in ('reembolso', 'devolucion', 'refund')):
+            return 'Solicitud de reembolso'
+        if any(k in norm for k in ('microtransaccion', 'microtransaccion extra')):
+            return 'Fallo en microtransaccion'
+        if any(k in norm for k in ('pendiente', 'proceso', 'no confirmado', 'sin confirmar', 'liquidacion')):
+            return 'Pago pendiente de confirmacion'
+        if any(k in norm for k in ('debitado', 'cobrado', 'cobro', 'cargo')):
+            return 'Cobro no reflejado en plataforma'
+        return 'Incidencia de facturacion'
+
+    if inferred_type == 'Acceso y Cuenta':
+        return 'Problema de acceso a cuenta'
+    if inferred_type == 'Seguridad y Privacidad':
+        return 'Incidencia de seguridad'
+    if inferred_type == 'Hardware y Red':
+        return 'Incidencia de red o conectividad'
+    if inferred_type == 'Integración y Software':
+        return 'Fallo de integracion o software'
+    if inferred_type == 'Error de Sistema / Rendimiento':
+        return 'Error de sistema en plataforma'
+
+    return ''
+
+
+def _sumy_sentence(text: str) -> str:
+    """Intenta resumir con Sumy (LSA) y devuelve una sola frase."""
+    if not (PlaintextParser and Tokenizer and LsaSummarizer):
+        return ''
+
+    content = _strip_intro_phrases(text)
+    if not content:
+        return ''
+
+    for language in ('spanish', 'english'):
+        try:
+            parser = PlaintextParser.from_string(content, Tokenizer(language))
+            summarizer = LsaSummarizer()
+            sentence = next(iter(summarizer(parser.document, 1)), None)
+            if sentence:
+                return _clean_text(str(sentence))
+        except Exception:
+            continue
+
+    return ''
+
+
 def _build_subject_from_body(body_text: str) -> str:
-    """Genera un asunto corto a partir del cuerpo del ticket."""
+    """Genera un asunto muy corto a partir del cuerpo del ticket."""
     body_text = _clean_text(body_text)
     if not body_text:
         return 'Nuevo ticket'
 
-    # Prioriza la primera frase
-    first_sentence = re.split(r'[\.!?\n]+', body_text, maxsplit=1)[0].strip()
-    if not first_sentence:
-        first_sentence = body_text
+    refined_body = _strip_intro_phrases(body_text)
 
-    words = first_sentence.split()
-    if len(words) <= 12:
-        subject = first_sentence
-    else:
-        subject = ' '.join(words[:12]) + '...'
+    # Primero, intentamos asunto orientado a intención de negocio.
+    candidate = _intent_subject(refined_body)
 
-    # Garantiza que subject no sea idéntico al body completo cuando sea posible
-    if subject.lower() == body_text.lower():
-        short_words = words[:8]
-        subject = (' '.join(short_words) + '...') if short_words else 'Nuevo ticket'
+    if not candidate:
+        # Segundo intento: Sumy (extractivo) sobre texto refinado.
+        candidate = _sumy_sentence(refined_body)
 
-    return subject[:160]
+    if not candidate:
+        # Fallback final: primera frase útil del texto refinado.
+        candidate = re.split(r'[\.!?\n]+', refined_body, maxsplit=1)[0].strip() or refined_body
+
+    if _normalize_for_match(candidate).startswith(_GENERIC_INTRO_PREFIXES):
+        intent_fallback = _intent_subject(refined_body)
+        if intent_fallback:
+            candidate = intent_fallback
+
+    subject = _short_subject(candidate)
+
+    # Nunca guardar subject idéntico al body.
+    if _normalize_for_match(subject) == _normalize_for_match(body_text):
+        words = refined_body.split()
+        fallback = ' '.join(words[:max(1, min(4, len(words)))])
+        subject = _short_subject(fallback)
+
+    return subject[:_MAX_SUBJECT_LEN]
 
 
 def _infer_queue_from_type(pred_type: str) -> str:
@@ -304,6 +428,10 @@ def _normalize_ticket_payload(ticket: dict) -> dict:
     # Si no llega subject, generar uno automáticamente
     if not subject:
         subject = _build_subject_from_body(body_text)
+
+    # Mantener el asunto muy corto, aunque venga informado por integración.
+    if subject:
+        subject = _short_subject(subject)
 
     # Si subject y body llegan iguales (común en integraciones), resumir subject.
     if subject and body_text and _normalize_for_match(subject) == _normalize_for_match(body_text):
@@ -402,6 +530,10 @@ def ingest_tickets(file_id: int, api_key: str):
             subj = _clean_text(row.get('subject', row.get('title', '')))
             body_text = _clean_text(row.get('body', row.get('description', row.get('message', row.get('text', '')))))
             if not subj:
+                subj = _build_subject_from_body(body_text)
+            else:
+                subj = _short_subject(subj)
+            if subj and body_text and _normalize_for_match(subj) == _normalize_for_match(body_text):
                 subj = _build_subject_from_body(body_text)
             if not body_text:
                 body_text = subj
