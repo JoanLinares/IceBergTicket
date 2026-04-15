@@ -16,7 +16,7 @@ venv/
 *.joblib
 
 # Local test web (excluded from git)
-testWebAPI/
+testWebAPI/consulta.sql
 
 # Large dataset files (exceeds GitHub file size limits)
 ml/data/processed/dataset_with_explicit_categories.csv

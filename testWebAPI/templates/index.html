@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Web API Tickets</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="layout">
+    <section class="card">
+      <h1>Test Web API</h1>
+      <p class="muted">
+        Ingest base URL:
+        <span id="baseUrl">{{ ingest_base_url }}</span>
+      </p>
+      <form id="newTicketForm" class="form-grid">
+        <label>
+          Email del usuario
+          <input id="emailInput" type="email" required placeholder="user@example.com">
+        </label>
+
+        <label>
+          Mensaje
+          <textarea id="messageInput" required rows="4" placeholder="Escribe el mensaje del ticket"></textarea>
+        </label>
+
+        <button type="submit" id="createBtn">Crear ticket</button>
+      </form>
+      <p id="formFeedback" class="feedback"></p>
+    </section>
+
+    <section class="card">
+      <div class="tickets-head">
+        <h2>Tickets</h2>
+        <button id="refreshBtn" type="button">Recargar</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Asunto</th>
+              <th>Respuesta</th>
+              <th>Respondido</th>
+              <th>Estado</th>
+              <th>Accion</th>
+            </tr>
+          </thead>
+          <tbody id="ticketsBody">
+            <tr>
+              <td colspan="6" class="empty">Cargando tickets...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pager">
+        <button id="prevBtn" type="button">Anterior</button>
+        <span id="pageInfo">Pagina 1 de 1</span>
+        <button id="nextBtn" type="button">Siguiente</button>
+        <button id="lastBtn" type="button">Ultima pagina</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
