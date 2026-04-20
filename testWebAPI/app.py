@@ -24,7 +24,7 @@ from src.services.dw_service import decompress_db
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 DEFAULT_INGEST_BASE_URL = (
-    "http://localhost:5000/api/v1/ingest/18/NJ1oLRov4j4b48TtlCbL3TLlG6gDXGBKcCinfk-e0ug"
+    "http://127.0.0.1:5000/api/v1/ingest/16/8ij3niXyWclUPlWlcpsVW4llq1331pRtuJY7cN0j830"
 )
 READ_TIMEOUT = 20
 WRITE_TIMEOUT = 180
@@ -37,6 +37,7 @@ SORTABLE_FIELDS = {
     "created_at": "created_at",
     "date": "created_at",
     "status": "status_name",
+    "type": "ticket_type",
     "subject": "subject",
     "responded": "responded",
     "email": "email",
@@ -132,7 +133,7 @@ def _list_tickets_page(
     per_page: int,
     *,
     q: str | None = None,
-    subject: str | None = None,
+    ticket_type: str | None = None,
     user: str | None = None,
     statuses: list[str] | None = None,
     responded: str | None = None,
@@ -149,12 +150,25 @@ def _list_tickets_page(
         cust_cols = _columns(conn, "dim_customer")
         has_customer = bool(cust_cols)
         has_priority = "priority_key" in fact_cols and _table_exists(conn, "dim_priority")
+        has_type_key = "type_key" in fact_cols
+        has_dim_ticket_type = has_type_key and _table_exists(conn, "dim_ticket_type")
+        has_dim_type = has_type_key and _table_exists(conn, "dim_type")
+        has_pred_type = "pred_type" in fact_cols
 
         answer_expr = "tt.answer" if "answer" in text_cols else "NULL"
         desc_expr = "tt.description" if "description" in text_cols else "NULL"
         email_expr = "c.email" if has_customer else "NULL"
         name_expr = "c.customer_name" if has_customer else "NULL"
         priority_expr = "p.priority_name" if has_priority else "NULL"
+
+        if has_dim_ticket_type:
+            type_expr = "dtt.type_name"
+        elif has_dim_type:
+            type_expr = "dt.type_name"
+        elif has_pred_type:
+            type_expr = "f.pred_type"
+        else:
+            type_expr = "NULL"
 
         customer_join = (
             "LEFT JOIN dim_customer c ON c.customer_key = f.customer_key"
@@ -164,6 +178,13 @@ def _list_tickets_page(
             "LEFT JOIN dim_priority p ON p.priority_key = f.priority_key"
             if has_priority else ""
         )
+        type_join = (
+            "LEFT JOIN dim_ticket_type dtt ON dtt.type_key = f.type_key"
+            if has_dim_ticket_type else (
+                "LEFT JOIN dim_type dt ON dt.type_key = f.type_key"
+                if has_dim_type else ""
+            )
+        )
 
         base_cte = f"""
             WITH base AS (
@@ -172,6 +193,7 @@ def _list_tickets_page(
                     COALESCE(tt.subject, '')                          AS subject,
                     COALESCE({desc_expr}, '')                         AS description,
                     LOWER(COALESCE(s.status_name, 'open'))            AS status_name,
+                    LOWER(COALESCE(NULLIF(TRIM({type_expr}), ''), '')) AS ticket_type,
                     {answer_expr}                                     AS response_text,
                     COALESCE(f.created_at, 0)                         AS created_at,
                     COALESCE({email_expr}, '')                        AS email,
@@ -185,6 +207,7 @@ def _list_tickets_page(
                 FROM fact_tickets f
                 LEFT JOIN ticket_text tt ON tt.ticket_id = f.ticket_id
                 LEFT JOIN dim_status s   ON s.status_key = f.status_key
+                {type_join}
                 {customer_join}
                 {priority_join}
             )
@@ -199,6 +222,7 @@ def _list_tickets_page(
                 "LOWER(subject) LIKE ?",
                 "LOWER(description) LIKE ?",
                 "LOWER(COALESCE(response_text, '')) LIKE ?",
+                "LOWER(ticket_type) LIKE ?",
                 "LOWER(email) LIKE ?",
                 "LOWER(customer_name) LIKE ?",
                 "CAST(ticket_id AS TEXT) LIKE ?",
@@ -206,9 +230,9 @@ def _list_tickets_page(
             where.append("(" + " OR ".join(parts) + ")")
             params.extend([like] * len(parts))
 
-        if subject:
-            where.append("LOWER(subject) LIKE ?")
-            params.append(f"%{subject.strip().lower()}%")
+        if ticket_type:
+            where.append("ticket_type = ?")
+            params.append(ticket_type.strip().lower())
 
         if user:
             where.append("(LOWER(email) LIKE ? OR LOWER(customer_name) LIKE ?)")
@@ -249,7 +273,7 @@ def _list_tickets_page(
         rows = conn.execute(
             base_cte + f"""
                 SELECT ticket_id, subject, status_name, response_text, created_at,
-                       email, customer_name, priority_name, responded
+                       email, customer_name, priority_name, ticket_type, responded
                 FROM base
                 WHERE {where_sql}
                 ORDER BY {sort_col} {order_dir}, ticket_id DESC
@@ -260,7 +284,7 @@ def _list_tickets_page(
 
         tickets = []
         for (ticket_id, subj, status_name, response_text, created_at,
-             email, customer_name, priority_name, responded_flag) in rows:
+             email, customer_name, priority_name, type_name, responded_flag) in rows:
             answer_text = (response_text or "").strip()
             status_norm = str(status_name or "open").strip().lower()
             is_resolved = status_norm in RESOLVED_STATUSES
@@ -279,6 +303,7 @@ def _list_tickets_page(
                 "created_at": int(created_at) if created_at else 0,
                 "email": email or "",
                 "customer_name": customer_name or "",
+                "type": (type_name or "").strip().lower() or None,
                 "priority": (priority_name or "").strip().lower() or None,
             })
 
@@ -293,6 +318,17 @@ def _list_tickets_page(
             except sqlite3.DatabaseError:
                 available_statuses = []
 
+        available_types: list[str] = []
+        if type_expr != "NULL":
+            try:
+                rows_t = conn.execute(
+                    base_cte + "SELECT DISTINCT ticket_type FROM base "
+                    "WHERE ticket_type != '' ORDER BY ticket_type"
+                ).fetchall()
+                available_types = [r[0] for r in rows_t if r[0]]
+            except sqlite3.DatabaseError:
+                available_types = []
+
         return {
             "tickets": tickets,
             "total": total,
@@ -301,11 +337,13 @@ def _list_tickets_page(
             "total_pages": total_pages,
             "facets": {
                 "statuses": available_statuses,
+                "types": available_types,
             },
             "capabilities": {
                 "has_customer": has_customer,
                 "has_priority": has_priority,
                 "has_answer": answer_expr != "NULL",
+                "has_type": type_expr != "NULL",
             },
         }
     finally:
@@ -367,7 +405,11 @@ def list_tickets_proxy():
         return jsonify({"error": "page y per_page deben ser enteros"}), 400
 
     q = (request.args.get("q") or "").strip() or None
-    subject = (request.args.get("subject") or "").strip() or None
+    ticket_type = (
+        request.args.get("type")
+        or request.args.get("subject")
+        or ""
+    ).strip() or None
     user = (request.args.get("user") or "").strip() or None
 
     status_raw = (request.args.get("status") or "").strip()
@@ -385,7 +427,7 @@ def list_tickets_proxy():
     try:
         payload = _list_tickets_page(
             page, per_page,
-            q=q, subject=subject, user=user,
+            q=q, ticket_type=ticket_type, user=user,
             statuses=statuses, responded=responded,
             date_from=date_from, date_to=date_to,
             sort=sort, order=order,

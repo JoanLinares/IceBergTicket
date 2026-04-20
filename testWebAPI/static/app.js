@@ -12,7 +12,7 @@ const DEFAULTS = Object.freeze({
   page: 1,
   perPage: 25,
   q: "",
-  subject: "",
+  type: "",
   user: "",
   statuses: [],
   responded: "",
@@ -27,8 +27,8 @@ const state = {
   statuses: [],
   total: 0,
   totalPages: 1,
-  facets: { statuses: [] },
-  capabilities: { has_customer: true, has_priority: false, has_answer: false },
+  facets: { statuses: [], types: [] },
+  capabilities: { has_customer: true, has_priority: false, has_answer: false, has_type: false },
   isLoading: false,
   lastRequestedAt: 0,
   lastLoadMs: null,
@@ -56,7 +56,7 @@ const dom = {
   toggleFiltersBtn: $("toggleFiltersBtn"),
   clearFiltersBtn: $("clearFiltersBtn"),
   filters: $("filters"),
-  subjectInput: $("subjectInput"),
+  typeSelect: $("typeSelect"),
   userInput: $("userInput"),
   statusChips: $("statusChips"),
   respondedSegs: document.querySelectorAll(".segmented [data-responded]"),
@@ -183,6 +183,15 @@ function formatStatusLabel(s) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+function formatTypeLabel(s) {
+  if (!s) return "—";
+  return String(s)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
 /* ----------------------------- HTTP ----------------------------- */
 
 async function requestJSON(url, options = {}) {
@@ -205,7 +214,7 @@ function buildListUrl() {
   params.set("page", String(state.page));
   params.set("per_page", String(state.perPage));
   if (state.q) params.set("q", state.q);
-  if (state.subject) params.set("subject", state.subject);
+  if (state.type) params.set("type", state.type);
   if (state.user) params.set("user", state.user);
   if (state.statuses.length) params.set("status", state.statuses.join(","));
   if (state.responded) params.set("responded", state.responded);
@@ -224,7 +233,7 @@ function readStateFromURL() {
   const perPage = Number(p.get("per_page") || DEFAULTS.perPage) || DEFAULTS.perPage;
   state.perPage = [10, 25, 50, 100].includes(perPage) ? perPage : DEFAULTS.perPage;
   state.q = p.get("q") || "";
-  state.subject = p.get("subject") || "";
+  state.type = (p.get("type") || p.get("subject") || "").trim().toLowerCase();
   state.user = p.get("user") || "";
   state.statuses = (p.get("status") || "").split(",").map((s) => s.trim()).filter(Boolean);
   state.responded = ["yes", "no"].includes(p.get("responded") || "") ? p.get("responded") : "";
@@ -239,7 +248,7 @@ function writeStateToURL() {
   if (state.page !== 1) p.set("page", state.page);
   if (state.perPage !== DEFAULTS.perPage) p.set("per_page", state.perPage);
   if (state.q) p.set("q", state.q);
-  if (state.subject) p.set("subject", state.subject);
+  if (state.type) p.set("type", state.type);
   if (state.user) p.set("user", state.user);
   if (state.statuses.length) p.set("status", state.statuses.join(","));
   if (state.responded) p.set("responded", state.responded);
@@ -357,6 +366,23 @@ function renderStatusChips() {
     .join("");
 }
 
+function renderTypeSelect() {
+  const facetTypes = Array.isArray(state.facets.types) ? state.facets.types : [];
+  const values = new Set(
+    facetTypes
+      .map((t) => String(t || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if (state.type) values.add(state.type.toLowerCase());
+
+  const sorted = [...values].sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
+  dom.typeSelect.innerHTML = [
+    '<option value="">Todos los tipos</option>',
+    ...sorted.map((typeName) => `<option value="${escapeHtml(typeName)}">${escapeHtml(formatTypeLabel(typeName))}</option>`),
+  ].join("");
+  dom.typeSelect.value = state.type || "";
+}
+
 function renderRespondedSegs() {
   dom.respondedSegs.forEach((btn) => {
     const val = btn.dataset.responded || "";
@@ -369,7 +395,7 @@ function renderActiveChips() {
   const push = (label, value, onClear) => chips.push({ label, value, onClear });
 
   if (state.q) push("Búsqueda", state.q, () => { state.q = ""; dom.qInput.value = ""; });
-  if (state.subject) push("Asunto", state.subject, () => { state.subject = ""; dom.subjectInput.value = ""; });
+  if (state.type) push("Tipo", formatTypeLabel(state.type), () => { state.type = ""; dom.typeSelect.value = ""; });
   if (state.user) push("Usuario", state.user, () => { state.user = ""; dom.userInput.value = ""; });
   if (state.statuses.length) {
     state.statuses.forEach((s) => {
@@ -489,7 +515,7 @@ function renderKPIs() {
 
 function hasActiveFilters() {
   return !!(
-    state.q || state.subject || state.user ||
+    state.q || state.type || state.user ||
     state.statuses.length || state.responded ||
     state.dateFrom || state.dateTo
   );
@@ -528,10 +554,14 @@ async function loadTickets({ preserveScroll = true } = {}) {
     state.total = payload.total || 0;
     state.totalPages = Math.max(1, payload.total_pages || 1);
     state.page = payload.page || state.page;
-    state.facets = payload.facets || { statuses: [] };
+    state.facets = {
+      statuses: payload.facets?.statuses || [],
+      types: payload.facets?.types || [],
+    };
     state.capabilities = payload.capabilities || state.capabilities;
     state.lastLoadMs = Math.round(performance.now() - t0);
 
+    renderTypeSelect();
     renderStatusChips();
     renderTickets(payload.tickets || []);
     renderPager();
@@ -611,7 +641,7 @@ function setFormFeedback(text, kind = "info") {
 
 function clearAllFilters() {
   state.q = "";
-  state.subject = "";
+  state.type = "";
   state.user = "";
   state.statuses = [];
   state.responded = "";
@@ -622,13 +652,14 @@ function clearAllFilters() {
   state.page = 1;
 
   dom.qInput.value = "";
-  dom.subjectInput.value = "";
+  dom.typeSelect.value = "";
   dom.userInput.value = "";
   dom.dateFromInput.value = "";
   dom.dateToInput.value = "";
   dom.sortSelect.value = DEFAULTS.sort;
   dom.orderBtn.dataset.order = DEFAULTS.order;
   dom.orderLabel.textContent = "Desc";
+  renderTypeSelect();
   renderRespondedSegs();
   renderStatusChips();
   writeStateToURL();
@@ -679,7 +710,7 @@ function toast({ title = "", message = "", kind = "info", duration = 4000 } = {}
 
 function writeFiltersToDOM() {
   dom.qInput.value = state.q;
-  dom.subjectInput.value = state.subject;
+  dom.typeSelect.value = state.type;
   dom.userInput.value = state.user;
   dom.dateFromInput.value = state.dateFrom;
   dom.dateToInput.value = state.dateTo;
@@ -702,9 +733,12 @@ function wireEvents() {
     state.q = e.target.value.trim();
     triggerSearch();
   });
-  dom.subjectInput.addEventListener("input", (e) => {
-    state.subject = e.target.value.trim();
-    triggerSearch();
+  dom.typeSelect.addEventListener("change", (e) => {
+    state.type = e.target.value.trim().toLowerCase();
+    state.page = 1;
+    writeStateToURL();
+    renderActiveChips();
+    loadTickets();
   });
   dom.userInput.addEventListener("input", (e) => {
     state.user = e.target.value.trim();
@@ -863,6 +897,7 @@ function wireEvents() {
 function boot() {
   readStateFromURL();
   writeFiltersToDOM();
+  renderTypeSelect();
   renderStatusChips();
   renderSortIndicators();
   renderActiveChips();
