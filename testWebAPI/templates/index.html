@@ -122,8 +122,10 @@
 
         <div class="filters" id="filters">
           <div class="filter">
-            <label for="subjectInput">Asunto</label>
-            <input id="subjectInput" type="search" autocomplete="off" placeholder="ej. error de login">
+            <label for="typeSelect">Tipo</label>
+            <select id="typeSelect">
+              <option value="">Todos los tipos</option>
+            </select>
           </div>
           <div class="filter">
             <label for="userInput">Usuario / email</label>
@@ -156,6 +158,7 @@
                 <option value="created_at">Fecha de creación</option>
                 <option value="ticket_id">ID</option>
                 <option value="status">Estado</option>
+                <option value="type">Tipo</option>
                 <option value="subject">Asunto</option>
                 <option value="responded">Respondido</option>
                 <option value="email">Email</option>
