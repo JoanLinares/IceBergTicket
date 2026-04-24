@@ -14,7 +14,11 @@ from werkzeug.security import check_password_hash
 
 from src.api.models.file_model import FileModel
 from src.services.file_service import FileService
-from src.services.ml_service import MLService
+from src.services.ml_service import (
+    MLService,
+    _detect_language_from_text,
+    _normalize_language_code,
+)
 from src.services.dw_service import (
     _upsert_date, _upsert_customer, _upsert_agent,
     _upsert_dim_text, _upsert_language, _insert_tags,
@@ -34,6 +38,12 @@ except Exception:
     PlaintextParser = None
     Tokenizer = None
     LsaSummarizer = None
+
+try:
+    from langdetect import detect_langs, LangDetectException
+except Exception:
+    detect_langs = None
+    LangDetectException = Exception
 
 
 CANONICAL_TICKET_TYPES = [
@@ -149,6 +159,69 @@ _GENERIC_INTRO_PREFIXES = (
     'hola',
     'estimado',
 )
+
+_LANG_PAYLOAD_KEYS = (
+    'language',
+    'lang',
+    'idioma',
+    'language_code',
+    'ticket_language',
+    'locale',
+    'language_hint',
+)
+
+_ES_LANGUAGE_MARKERS = {
+    'hola', 'necesito', 'herramienta', 'sincronizacion', 'algunos',
+    'despues', 'hemos', 'revisado', 'configuracion', 'podrian',
+    'gracias', 'problema', 'credenciales', 'aparacen', 'aparecen',
+}
+_PT_LANGUAGE_MARKERS = {
+    'ola', 'preciso', 'ferramenta', 'sincronizacao', 'alguns',
+    'depois', 'revisamos', 'configuracao', 'poderiam',
+    'obrigado', 'problema', 'credenciais', 'aparecem',
+}
+_LANG_TOKEN_RE = re.compile(r'[a-z]{2,}')
+
+
+def _has_value(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _dict_get_ci(data: dict, *keys):
+    """Busca una clave en dict de forma case-insensitive y devuelve primer valor no vacío."""
+    for key in keys:
+        value = data.get(key)
+        if _has_value(value):
+            return value
+
+    lowered = {str(k).lower(): v for k, v in data.items()}
+    for key in keys:
+        value = lowered.get(str(key).lower())
+        if _has_value(value):
+            return value
+
+    return None
+
+
+def _row_get_ci(row, *keys):
+    """Busca una clave en pandas.Series (index) de forma case-insensitive."""
+    for key in keys:
+        value = row.get(key)
+        if _has_value(value):
+            return value
+
+    wanted = {str(k).lower() for k in keys}
+    for col in row.index:
+        if str(col).lower() in wanted:
+            value = row.get(col)
+            if _has_value(value):
+                return value
+
+    return None
 
 
 def _authenticate(file_id: int, api_key: str):
@@ -411,14 +484,9 @@ def _normalize_ticket_payload(ticket: dict) -> dict:
     if not isinstance(ticket, dict):
         return {}
 
-    subject = _clean_text(ticket.get('subject') or ticket.get('title') or ticket.get('summary') or ticket.get('asunto'))
+    subject = _clean_text(_dict_get_ci(ticket, 'subject', 'title', 'summary', 'asunto'))
     body_text = _clean_text(
-        ticket.get('body')
-        or ticket.get('description')
-        or ticket.get('message')
-        or ticket.get('text')
-        or ticket.get('content')
-        or ticket.get('mensaje')
+        _dict_get_ci(ticket, 'body', 'description', 'message', 'text', 'content', 'mensaje')
     )
 
     # Si solo llega subject, usarlo también como base de body
@@ -444,9 +512,94 @@ def _normalize_ticket_payload(ticket: dict) -> dict:
     normalized = dict(ticket)
     normalized['subject'] = subject
     normalized['body'] = body_text
-    normalized['priority'] = _clean_text(ticket.get('priority') or ticket.get('prioridad') or 'normal').lower()
-    normalized['queue'] = _clean_text(ticket.get('queue') or ticket.get('department') or ticket.get('category') or ticket.get('departamento'))
+    normalized['priority'] = _clean_text(_dict_get_ci(ticket, 'priority', 'prioridad') or 'normal').lower()
+    normalized['queue'] = _clean_text(_dict_get_ci(ticket, 'queue', 'department', 'category', 'departamento'))
     return normalized
+
+
+def _verify_language_from_text(subject: str, body: str) -> str:
+    """Verifica el idioma final desde el texto antes de persistirlo."""
+    text = _clean_text(f"{subject} {body}".strip()).lower()
+    if len(text) < 15:
+        return ''
+
+    # Marcas exclusivas de espanol muy fiables.
+    if any(ch in text for ch in ('¿', '¡', 'ñ')):
+        return 'es'
+
+    normalized = _normalize_for_match(text)
+    tokens = _LANG_TOKEN_RE.findall(normalized)
+    if len(tokens) < 4:
+        return ''
+
+    es_score = sum(1 for tok in tokens if tok in _ES_LANGUAGE_MARKERS)
+    pt_score = sum(1 for tok in tokens if tok in _PT_LANGUAGE_MARKERS)
+
+    # Tildes frecuentes en portugues; no aparecen en el ejemplo del usuario,
+    # pero ayudan cuando el texto si las contiene.
+    if any(ch in text for ch in ('ã', 'õ', 'ç')):
+        pt_score += 2
+
+    if es_score >= pt_score + 1:
+        return 'es'
+    if pt_score >= es_score + 2:
+        return 'pt'
+    return ''
+
+
+def _detect_language_with_library(subject: str, body: str) -> str:
+    """Usa langdetect directamente y normaliza la salida a los codigos soportados."""
+    if detect_langs is None:
+        return ''
+
+    text = _clean_text(f"{subject} {body}".strip())
+    if len(text) < 15:
+        return ''
+
+    try:
+        candidates = detect_langs(text)
+    except LangDetectException:
+        return ''
+    except Exception:
+        return ''
+
+    if not candidates:
+        return ''
+
+    top = candidates[0]
+    lang = _normalize_language_code(getattr(top, 'lang', None)) or ''
+    prob = float(getattr(top, 'prob', 0.0))
+    if not lang:
+        return ''
+
+    if prob < 0.70 and len(text) < 120:
+        return ''
+    return lang
+
+
+def _resolve_ingest_language_details(row) -> tuple[str, str, str]:
+    """Resuelve idioma para ingest y devuelve (payload_lang, verified_lang, final_lang)."""
+    subject = _clean_text(_row_get_ci(row, 'subject', 'title', 'summary'))
+    body = _clean_text(
+        _row_get_ci(row, 'body', 'description', 'message', 'text', 'content', 'mensaje')
+    )
+    verified_lang = _verify_language_from_text(subject, body)
+    library_lang = _detect_language_with_library(subject, body)
+    detected = _detect_language_from_text(f"{subject} {body}".strip())
+    detected_payload = _normalize_language_code(_row_get_ci(row, 'detected_language')) or ''
+    detected_lang = verified_lang or library_lang or detected or detected_payload or ''
+
+    # Fallback: si la detección por texto no puede decidir (textos muy cortos,
+    # mezcla de idiomas), usar hint explícito de la integración.
+    payload_lang = _normalize_language_code(_row_get_ci(row, *_LANG_PAYLOAD_KEYS)) or ''
+
+    model_pred = _normalize_language_code(_row_get_ci(row, 'pred_language')) or ''
+    final_lang = verified_lang or library_lang or detected_lang or model_pred or payload_lang or 'unknown'
+    return payload_lang, detected_lang, final_lang
+
+def _resolve_ingest_language(row) -> str:
+    """Compatibilidad: devuelve solo el idioma final."""
+    return _resolve_ingest_language_details(row)[2]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -517,6 +670,18 @@ def ingest_tickets(file_id: int, api_key: str):
             lambda r: _clean_text(r.get('body')) or _clean_text(r.get('subject')),
             axis=1
         )
+
+        # Resolver idioma antes de escribir en DB. Guardamos trazabilidad para depuración:
+        # - payload_language: hint recibido de la integración
+        # - detected_language: idioma detectado por texto
+        # - pred_language: idioma final persistido
+        language_resolution = df_classified.apply(
+            _resolve_ingest_language_details,
+            axis=1,
+            result_type='expand',
+        )
+        language_resolution.columns = ['payload_language', 'detected_language', 'pred_language']
+        df_classified[['payload_language', 'detected_language', 'pred_language']] = language_resolution
     except Exception as exc:
         return jsonify({"error": f"Error en clasificación ML: {exc}"}), 500
 
@@ -526,7 +691,6 @@ def ingest_tickets(file_id: int, api_key: str):
     try:
         for _, row in df_classified.iterrows():
             pred_type = str(row.get('pred_type', ''))
-            pred_lang = str(row.get('pred_language', ''))
             subj = _clean_text(row.get('subject', row.get('title', '')))
             body_text = _clean_text(row.get('body', row.get('description', row.get('message', row.get('text', '')))))
             if not subj:
@@ -537,6 +701,17 @@ def ingest_tickets(file_id: int, api_key: str):
                 subj = _build_subject_from_body(body_text)
             if not body_text:
                 body_text = subj
+
+            # Verificacion final justo antes de persistir en DB.
+            pred_lang = (
+                _verify_language_from_text(subj, body_text)
+                or _detect_language_with_library(subj, body_text)
+                or _detect_language_from_text(f"{subj} {body_text}".strip())
+                or _normalize_language_code(row.get('pred_language'))
+                or _normalize_language_code(row.get('detected_language'))
+                or _normalize_language_code(row.get('payload_language'))
+                or 'unknown'
+            )
 
             email = str(row.get('email', row.get('submitter_email', row.get('customer_email', ''))))
             name  = str(row.get('name', row.get('submitter_name', row.get('customer_name', ''))))
@@ -612,7 +787,9 @@ def ingest_tickets(file_id: int, api_key: str):
         preview.append({
             'ticket_id': tid,
             'subject': _clean_text(row.get('subject')),
-            'pred_language': str(row.get('pred_language', '')),
+            'pred_language': str(_normalize_language_code(row.get('pred_language')) or 'unknown'),
+            'detected_language': str(_normalize_language_code(row.get('detected_language')) or ''),
+            'payload_language': str(_normalize_language_code(row.get('payload_language')) or ''),
             'pred_type': str(row.get('pred_type', '')),
             'pred_topic': str(row.get('pred_topic', row.get('pred_type', ''))),
             'pred_level': str(row.get('pred_level', level)),

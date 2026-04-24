@@ -26,6 +26,7 @@ import tempfile
 import hashlib
 import lzma
 import zlib
+import unicodedata
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -36,6 +37,21 @@ from src.services.ml_service import _find_col, _COL_ALIASES
 LANG_NAMES = {
     'en': 'English', 'es': 'Español', 'de': 'Deutsch',
     'fr': 'Français', 'pt': 'Português',
+}
+
+_LANG_CODE_ALIASES = {
+    'english': 'en',
+    'ingles': 'en',
+    'spanish': 'es',
+    'espanol': 'es',
+    'german': 'de',
+    'deutsch': 'de',
+    'aleman': 'de',
+    'french': 'fr',
+    'francais': 'fr',
+    'frances': 'fr',
+    'portuguese': 'pt',
+    'portugues': 'pt',
 }
 
 # Longitud máxima de texto en ticket_text (el DW es analítico, no operacional)
@@ -63,6 +79,29 @@ def _clean_text_value(value, default: str = '') -> str:
     if not text or text.lower() in {'nan', 'none', 'null', 'nat'}:
         return default
     return text
+
+
+def _normalize_language_code(lang_code) -> str | None:
+    if lang_code is None:
+        return None
+
+    raw = str(lang_code).strip().lower()
+    if not raw or raw in {'unknown', 'nan', 'none', 'null'}:
+        return None
+
+    if '-' in raw:
+        raw = raw.split('-', 1)[0]
+    if raw in LANG_NAMES:
+        return raw
+
+    normalized = ''.join(
+        ch for ch in unicodedata.normalize('NFD', raw)
+        if unicodedata.category(ch) != 'Mn'
+    )
+    if normalized in LANG_NAMES:
+        return normalized
+
+    return _LANG_CODE_ALIASES.get(normalized)
 
 
 def _to_epoch(val) -> int:
@@ -436,6 +475,7 @@ def _upsert_dim_text(conn, table, name_col, key_col, value) -> int | None:
 
 
 def _upsert_language(conn, lang_code) -> int | None:
+    lang_code = _normalize_language_code(lang_code)
     if not lang_code:
         return None
     name = LANG_NAMES.get(str(lang_code).lower(), lang_code)

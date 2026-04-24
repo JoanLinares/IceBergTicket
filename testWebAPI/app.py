@@ -4,6 +4,7 @@ import sys
 import math
 import sqlite3
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,15 +21,30 @@ if str(ROOT_DIR) not in sys.path:
 from src.api.models.file_model import FileModel
 from src.services.file_service import FileService
 from src.services.dw_service import decompress_db
+from src.services.ml_service import _normalize_language_code
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 DEFAULT_INGEST_BASE_URL = (
-    "http://127.0.0.1:5000/api/v1/ingest/16/8ij3niXyWclUPlWlcpsVW4llq1331pRtuJY7cN0j830"
+    "http://127.0.0.1:5000/api/v1/ingest/20/h6nepMFIlr-Oab2zkndLEvn0237MN1JFelo4-4E7A0A"
 )
 READ_TIMEOUT = 20
 WRITE_TIMEOUT = 180
 _INGEST_PATH_RE = re.compile(r"/api/v1/ingest/(?P<file_id>\d+)/(?P<api_key>[^/]+)$")
+_LANG_TOKEN_RE = re.compile(r"[a-z]{2,}")
+
+_ES_WORDS = {
+    "hola", "necesito", "ayuda", "integracion", "herramienta", "actualmente",
+    "sistemas", "sincronizacion", "algunos", "datos", "despues", "hemos",
+    "revisado", "configuracion", "credenciales", "podrian", "pasos", "gracias",
+    "problema", "principal", "aparecen", "incompletos", "identificar",
+}
+_PT_WORDS = {
+    "ola", "preciso", "ajuda", "integracao", "ferramenta", "atualmente",
+    "sistemas", "sincronizacao", "alguns", "dados", "depois", "revisamos",
+    "configuracao", "credenciais", "poderiam", "passos", "obrigado",
+    "problema", "principal", "aparecem", "incompletos", "identificar",
+}
 
 RESOLVED_STATUSES = {"resolved", "closed"}
 SORTABLE_FIELDS = {
@@ -43,6 +59,37 @@ SORTABLE_FIELDS = {
     "email": "email",
     "user": "customer_name",
 }
+
+
+def _strip_accents(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value or "")
+    return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+
+def _detect_proxy_language_from_text(text: str) -> str | None:
+    clean = " ".join(str(text or "").split()).strip().lower()
+    if len(clean) < 15:
+        return None
+
+    # Señales muy claras de español.
+    if "¿" in clean or "¡" in clean or "ñ" in clean:
+        return "es"
+
+    normalized = _strip_accents(clean)
+    tokens = _LANG_TOKEN_RE.findall(normalized)
+    if len(tokens) < 4:
+        return None
+
+    es_score = sum(1 for tok in tokens if tok in _ES_WORDS)
+    pt_score = sum(1 for tok in tokens if tok in _PT_WORDS)
+
+    if es_score == 0 and pt_score == 0:
+        return None
+    if es_score >= pt_score + 1:
+        return "es"
+    if pt_score >= es_score + 2:
+        return "pt"
+    return None
 
 
 def _normalize_ingest_base(url: str) -> str:
@@ -156,7 +203,11 @@ def _list_tickets_page(
         has_pred_type = "pred_type" in fact_cols
 
         answer_expr = "tt.answer" if "answer" in text_cols else "NULL"
-        desc_expr = "tt.description" if "description" in text_cols else "NULL"
+        body_expr = (
+            "tt.body" if "body" in text_cols else (
+                "tt.description" if "description" in text_cols else "NULL"
+            )
+        )
         email_expr = "c.email" if has_customer else "NULL"
         name_expr = "c.customer_name" if has_customer else "NULL"
         priority_expr = "p.priority_name" if has_priority else "NULL"
@@ -191,7 +242,7 @@ def _list_tickets_page(
                 SELECT
                     f.ticket_id                                       AS ticket_id,
                     COALESCE(tt.subject, '')                          AS subject,
-                    COALESCE({desc_expr}, '')                         AS description,
+                    COALESCE({body_expr}, '')                         AS description,
                     LOWER(COALESCE(s.status_name, 'open'))            AS status_name,
                     LOWER(COALESCE(NULLIF(TRIM({type_expr}), ''), '')) AS ticket_type,
                     {answer_expr}                                     AS response_text,
@@ -272,7 +323,7 @@ def _list_tickets_page(
 
         rows = conn.execute(
             base_cte + f"""
-                SELECT ticket_id, subject, status_name, response_text, created_at,
+                SELECT ticket_id, subject, description, status_name, response_text, created_at,
                        email, customer_name, priority_name, ticket_type, responded
                 FROM base
                 WHERE {where_sql}
@@ -283,7 +334,7 @@ def _list_tickets_page(
         ).fetchall()
 
         tickets = []
-        for (ticket_id, subj, status_name, response_text, created_at,
+        for (ticket_id, subj, description, status_name, response_text, created_at,
              email, customer_name, priority_name, type_name, responded_flag) in rows:
             answer_text = (response_text or "").strip()
             status_norm = str(status_name or "open").strip().lower()
@@ -297,6 +348,7 @@ def _list_tickets_page(
             tickets.append({
                 "ticket_id": ticket_id,
                 "subject": subj,
+                "body": (description or "").strip(),
                 "status": status_norm,
                 "response_name": response_name,
                 "responded": bool(responded_flag),
@@ -444,23 +496,53 @@ def list_tickets_proxy():
 @app.post("/api/tickets")
 def create_ticket_proxy():
     body = request.get_json(silent=True) or {}
-    email = str(body.get("email", "")).strip()
-    message = str(body.get("message", "")).strip()
+    email = str(
+        body.get("email")
+        or body.get("submitter_email")
+        or body.get("customer_email")
+        or ""
+    ).strip()
+    message = str(
+        body.get("message")
+        or body.get("body")
+        or body.get("description")
+        or body.get("text")
+        or body.get("content")
+        or ""
+    ).strip()
 
     if not email or not message:
-        return jsonify({"error": "Los campos email y message son obligatorios"}), 400
+        return jsonify({"error": "Los campos email y message/body son obligatorios"}), 400
 
     default_name = email.split("@", 1)[0] if "@" in email else email
+    forwarded = dict(body)
+    forwarded["email"] = email
+    forwarded["name"] = str(
+        body.get("name") or body.get("submitter_name") or body.get("customer_name") or default_name or "User"
+    ).strip() or "User"
+    forwarded["body"] = message
+
+    if not str(forwarded.get("priority") or "").strip():
+        forwarded["priority"] = "normal"
+
+    language_hint = body.get("language") or body.get("lang") or body.get("idioma")
+    hint_code = _normalize_language_code(language_hint)
+    detected_code = _normalize_language_code(_detect_proxy_language_from_text(message))
+
+    if hint_code and not detected_code:
+        forwarded["language_hint"] = hint_code
+    if detected_code:
+        forwarded["detected_language"] = detected_code
+
+    # Idioma final reenviado al ingest: priorizar texto real del ticket.
+    final_code = detected_code or hint_code
+    if final_code:
+        forwarded["language"] = final_code
 
     payload, status = _proxy_request(
         method="POST",
         path="/tickets",
-        json_body={
-            "email": email,
-            "name": default_name or "User",
-            "body": message,
-            "priority": "normal",
-        },
+        json_body=forwarded,
     )
     return jsonify(payload), status
 

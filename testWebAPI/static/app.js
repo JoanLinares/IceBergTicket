@@ -27,6 +27,7 @@ const state = {
   statuses: [],
   total: 0,
   totalPages: 1,
+  ticketsById: new Map(),
   facets: { statuses: [], types: [] },
   capabilities: { has_customer: true, has_priority: false, has_answer: false, has_type: false },
   isLoading: false,
@@ -97,6 +98,12 @@ const dom = {
   messageInput: $("messageInput"),
   createBtn: $("createBtn"),
   formFeedback: $("formFeedback"),
+
+  // Ticket modal
+  ticketModal: $("ticketModal"),
+  modalTicketId: $("modalTicketId"),
+  modalTicketSubject: $("modalTicketSubject"),
+  modalTicketBody: $("modalTicketBody"),
 
   // Toasts
   toastStack: $("toastStack"),
@@ -192,6 +199,11 @@ function formatTypeLabel(s) {
     .replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
+function bodyTextForModal(ticket) {
+  const text = String(ticket?.body || "").trim();
+  return text || "Este ticket no tiene body disponible.";
+}
+
 /* ----------------------------- HTTP ----------------------------- */
 
 async function requestJSON(url, options = {}) {
@@ -274,12 +286,14 @@ function showSkeleton() {
 }
 
 function showEmpty() {
+  state.ticketsById = new Map();
   dom.ticketsBody.innerHTML = "";
   dom.errorState.classList.add("hidden");
   dom.emptyState.classList.remove("hidden");
 }
 
 function showError(message) {
+  state.ticketsById = new Map();
   dom.ticketsBody.innerHTML = "";
   dom.emptyState.classList.add("hidden");
   dom.errorState.classList.remove("hidden");
@@ -287,6 +301,12 @@ function showError(message) {
 }
 
 function renderTickets(tickets) {
+  state.ticketsById = new Map(
+    (tickets || [])
+      .filter((t) => Number(t?.ticket_id))
+      .map((t) => [Number(t.ticket_id), t])
+  );
+
   if (!tickets.length) {
     showEmpty();
     return;
@@ -679,6 +699,28 @@ function closeDrawer() {
   setFormFeedback("", "info");
 }
 
+/* ----------------------------- Ticket modal ----------------------------- */
+
+function openTicketModal(ticket) {
+  if (!dom.ticketModal) return;
+
+  const id = Number(ticket?.ticket_id) || "—";
+  const subject = String(ticket?.subject || "").trim() || "(sin asunto)";
+
+  dom.modalTicketId.textContent = `Ticket #${id}`;
+  dom.modalTicketSubject.textContent = subject;
+  dom.modalTicketBody.textContent = bodyTextForModal(ticket);
+
+  dom.ticketModal.classList.add("is-open");
+  dom.ticketModal.setAttribute("aria-hidden", "false");
+}
+
+function closeTicketModal() {
+  if (!dom.ticketModal) return;
+  dom.ticketModal.classList.remove("is-open");
+  dom.ticketModal.setAttribute("aria-hidden", "true");
+}
+
 /* ----------------------------- Toasts ----------------------------- */
 
 function toast({ title = "", message = "", kind = "info", duration = 4000 } = {}) {
@@ -845,11 +887,25 @@ function wireEvents() {
 
   dom.ticketsBody.addEventListener("click", (event) => {
     const btn = event.target.closest("button[data-action='resolve']");
-    if (!btn) return;
-    const id = Number(btn.dataset.id);
-    if (!id) return;
-    btn.disabled = true;
-    resolveTicket(id);
+    if (btn) {
+      const id = Number(btn.dataset.id);
+      if (!id) return;
+      btn.disabled = true;
+      resolveTicket(id);
+      return;
+    }
+
+    const row = event.target.closest("tr[data-id]");
+    if (!row) return;
+    const ticketId = Number(row.dataset.id);
+    if (!ticketId) return;
+    const ticket = state.ticketsById.get(ticketId);
+    if (!ticket) return;
+    openTicketModal(ticket);
+  });
+
+  dom.ticketModal?.querySelectorAll("[data-modal-close]").forEach((el) => {
+    el.addEventListener("click", closeTicketModal);
   });
 
   // Drawer
@@ -870,6 +926,10 @@ function wireEvents() {
 
   // Global shortcuts
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && dom.ticketModal?.classList.contains("is-open")) {
+      closeTicketModal();
+      return;
+    }
     if (event.key === "Escape" && dom.drawer.classList.contains("is-open")) {
       closeDrawer();
     }

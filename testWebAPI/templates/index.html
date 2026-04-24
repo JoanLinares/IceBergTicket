@@ -284,6 +284,28 @@
     </div>
   </aside>
 
+  <!-- Popup detalle ticket -->
+  <div class="ticket-modal" id="ticketModal" aria-hidden="true" aria-labelledby="modalTicketSubject">
+    <div class="ticket-modal-overlay" data-modal-close></div>
+    <div class="ticket-modal-panel" role="dialog" aria-modal="true">
+      <header class="ticket-modal-head">
+        <div class="ticket-modal-headline">
+          <p class="ticket-modal-id" id="modalTicketId">Ticket</p>
+          <h2 class="ticket-modal-title" id="modalTicketSubject">Detalle del ticket</h2>
+        </div>
+        <button class="icon-close" type="button" data-modal-close aria-label="Cerrar popup">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </header>
+      <div class="ticket-modal-content">
+        <p class="ticket-modal-label">Body del ticket</p>
+        <div class="ticket-modal-body" id="modalTicketBody"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="true"></div>
 
   <script src="/static/app.js" defer></script>
