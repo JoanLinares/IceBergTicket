@@ -71,10 +71,10 @@ IceBergTicket genera **una sola base SQLite por carga**. El nivel se decide por 
 | Nivel | Cuando se usa | Diferencia principal |
 | --- | --- | --- |
 | **BASIC** | Dataset sin columnas explicitas de idioma/tipo y sin campos avanzados | Dimensiones esenciales, `pred_type` y `pred_language` en `fact_tickets` |
-| **MEDIUM** | Dataset con `ticket_type` o `language` | Añade `dim_type` y `dim_language` |
-| **PRO** | Dataset con `queue`, `answer`, `version`, `tags` o columnas `tag_*` | Añade colas, tags, puente many-to-many, respuesta y metricas de texto |
+| **MEDIUM** | Dataset con `ticket_type` o `language` | Agrega `dim_type` y `dim_language` |
+| **PRO** | Dataset con `queue`, `answer`, `version`, `tags` o columnas `tag_*` | Agrega colas, tags, puente many-to-many, respuesta y metricas de texto |
 
-Nota: `version` actua actualmente como señal para subir a PRO, pero el esquema PRO no tiene una columna dedicada para persistir versiones.
+Nota: `version` actua actualmente como indicador para subir a PRO, pero el esquema PRO no tiene una columna dedicada para persistir versiones.
 
 Referencias exactas de cada esquema:
 
@@ -86,22 +86,40 @@ Referencias exactas de cada esquema:
 
 ## Modelos de Machine Learning
 
-Los modelos de produccion se cargan desde `ml/model_artifacts/` mediante `src/services/ml_service.py`.
+El repositorio no publica modelos entrenados. Los artefactos `.pkl` se generan localmente al ejecutar el notebook de entrenamiento y quedan en `ml/model_artifacts/`, una ruta excluida de Git mediante `.gitignore`.
 
-| Tarea | Artefacto | Algoritmo real cargado | Features | Rendimiento test |
-| --- | --- | --- | --- | --- |
-| Tipo de ticket | `model_type_random_forest.pkl` | `LinearSVC` | TF-IDF especifico (`tfidf_vectorizer_type.pkl`) | Accuracy 0.9477, F1 0.9478 |
-| Idioma | `model_language_naive_bayes.pkl` | `GaussianNB` | Features combinadas escaladas | Accuracy 1.0000, F1 1.0000 |
-| Nivel Snowflake sugerido | `model_snowflake_gradient_boosting.pkl` | `GradientBoostingClassifier` | Features combinadas escaladas | Accuracy 0.8159, F1 0.7989 |
+La aplicacion esta preparada para cargar esos artefactos cuando existen, pero el proyecto se presenta como un pipeline reproducible: datos, preprocesado, entrenamiento, evaluacion e integracion con el generador de bases analiticas.
 
-Notas importantes:
+Tareas del pipeline ML:
 
-- El archivo `model_type_random_forest.pkl` mantiene ese nombre por compatibilidad historica, pero el artefacto actual contiene un `LinearSVC`.
-- La deteccion de idioma no depende solo del modelo: `MLService` combina la prediccion con normalizacion de codigos, heuristicas por texto y `langdetect` cuando esta disponible.
-- Durante ingest externa, el tipo de ticket se normaliza a un catalogo de negocio de 8 categorias: `Estrategia y Analisis`, `Hardware y Red`, `Otros`, `Seguridad y Privacidad`, `Error de Sistema / Rendimiento`, `Facturacion y Pagos`, `Acceso y Cuenta`, `Integracion y Software`.
-- La prediccion `pred_level` queda como enriquecimiento, pero el esquema final se decide por columnas reales para preservar datos.
+| Tarea | Objetivo | Uso dentro de la app |
+| --- | --- | --- |
+| Clasificacion de tipo | Identificar la naturaleza del ticket | Enriquecer `pred_type` y alimentar dimensiones de tipo |
+| Deteccion de idioma | Normalizar idioma a `en`, `es`, `de`, `fr`, `pt` o `unknown` | Crear `pred_language` o `dim_language` |
+| Nivel DW sugerido | Estimar BASIC, MEDIUM o PRO | Indicador auxiliar; la decision final la toma `DWService` segun columnas reales |
 
-El entrenamiento y la evaluacion estan documentados en `ml/notebooks/ticket_classification_analysis.ipynb`; la metadata activa esta en `ml/model_artifacts/model_metadata.pkl`.
+El entrenamiento compara varios algoritmos de clasificacion supervisada con features de texto y variables categoricas. Las metricas finales dependen de la version del dataset y de la ejecucion del notebook, por lo que deben consultarse en `ml/notebooks/ticket_classification_analysis.ipynb` tras entrenar.
+
+Durante ingest externa, el tipo de ticket se normaliza a un catalogo de negocio de 8 categorias: `Estrategia y Analisis`, `Hardware y Red`, `Otros`, `Seguridad y Privacidad`, `Error de Sistema / Rendimiento`, `Facturacion y Pagos`, `Acceso y Cuenta`, `Integracion y Software`.
+
+---
+
+## Dataset y Agradecimientos
+
+El entrenamiento se apoya en el dataset publico [Customer IT Support - Ticket Dataset](https://www.kaggle.com/datasets/tobiasbueck/multilingual-customer-support-tickets), creado por Tobias Bueck en Kaggle. El dataset contiene tickets etiquetados con asunto, cuerpo, respuesta del agente, prioridad, cola, idioma, tipo y tags, lo que encaja especialmente bien con la generacion de esquemas BASIC, MEDIUM y PRO.
+
+Ficha del dataset:
+
+| Campo | Valor |
+| --- | --- |
+| Fuente | Kaggle |
+| Autor | Tobias Bueck |
+| Licencia | Attribution 4.0 International (CC BY 4.0) |
+| Usability | 10.00 |
+| Frecuencia esperada de actualizacion | Quarterly |
+| Tags | Text, Intermediate, English, Multiclass Classification, Neural Networks |
+
+Agradecimiento especial al autor del dataset por publicar una base de tickets etiquetada y util para proyectos de NLP, clasificacion multiclase y automatizacion de soporte. IceBergTicket utiliza estos datos con fines academicos y respeta la atribucion exigida por la licencia CC BY 4.0.
 
 ---
 
@@ -199,7 +217,7 @@ Requisitos:
 - Python 3.10 o superior.
 - `uv` para sincronizar dependencias.
 - PostgreSQL/Supabase accesible mediante `DATABASE_URL`.
-- Artefactos ML en `ml/model_artifacts/`.
+- Modelos entrenados generados localmente si se quiere usar inferencia ML completa.
 
 Instalacion:
 
@@ -217,6 +235,8 @@ JWT_SECRET=<clave-jwt>
 PORT=5000
 ML_ARTIFACTS_DIR=ml/model_artifacts
 ```
+
+`ML_ARTIFACTS_DIR` es opcional si se usa la ruta por defecto. La carpeta se crea al entrenar y no debe subirse al repositorio.
 
 Generar `MASTER_KEY_V1`:
 
@@ -271,8 +291,8 @@ IceBergTicket/
 |-- ml/
 |   |-- config/model_config.py
 |   |-- data/
-|   |-- model_artifacts/           # Modelos .pkl activos
-|   |-- models/                    # Wrappers ML historicos
+|   |-- model_artifacts/           # Generado localmente al entrenar, no versionado
+|   |-- models/                    # Codigo de inferencia y preprocesado
 |   `-- notebooks/                 # Entrenamiento y evaluacion
 |
 `-- testWebAPI/                    # Prototipo/API de pruebas separada
