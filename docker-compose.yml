@@ -1,27 +1,117 @@
-# Docker Compose - Plataforma de Gestió de Tickets
-version: '3.8'
+# Docker Compose — Plataforma IceBergTicket (Local 100%)
+# Incluye:
+#   1. PostgreSQL 16 local con volúmenes persistentes y auto-ejecución de migraciones.
+#   2. Silo (fork open-source de MinIO, 100% compatible S3) con consola web en el puerto 9001.
+#   3. Contenedor de inicialización para auto-crear el bucket 'iceberg-tickets'.
+#   4. Aplicación Flask optimizada con uv.
+#
+# NOTA: Las imágenes originales minio/minio y minio/mc fueron eliminadas de Docker Hub.
+#       Se usa pgsty/silo y pgsty/mc como reemplazo directo (drop-in, mismas variables y APIs).
 
 services:
-  # Aplicació Flask principal
+  # Base de Datos Relacional y Analítica
+  postgres:
+    image: postgres:16-alpine
+    container_name: iceberg_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: icebergticket
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Se ejecutan automáticamente al inicializar la base de datos por primera vez:
+      - ./migrations/20260101_000000_initial_schema.sql:/docker-entrypoint-initdb.d/01_initial_schema.sql:ro
+      - ./migrations/20260102_000000_native_postgres_databases.sql:/docker-entrypoint-initdb.d/02_native_postgres.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d icebergticket"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - iceberg_network
+
+  # Almacenamiento de Objetos Local (Silo — fork open-source de MinIO)
+  minio:
+    image: pgsty/silo:latest
+    container_name: iceberg_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API Endpoint
+      - "9001:9001"   # Consola Web MinIO (Panel de administración local)
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - iceberg_network
+
+  # Auto-creación del bucket local en MinIO al arrancar
+  minio-init:
+    image: pgsty/mc:latest
+    container_name: iceberg_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb --ignore-existing myminio/iceberg-tickets;
+      exit 0;
+      "
+    networks:
+      - iceberg_network
+
+  # Aplicación Flask
   web:
-    build: .
-    container_name: tickets_app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iceberg_app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     ports:
       - "5000:5000"
     environment:
       - FLASK_ENV=development
       - FLASK_DEBUG=1
-    env_file:
-      - .env
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/icebergticket
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_BUCKET=iceberg-tickets
+      - MINIO_USE_SSL=false
+      - MASTER_KEY_V1=rZ7P4Z4O1xJ9V2v7X8k0W5m3N6q9S2u5Y8b1E4g7H0c=
+      - SECRET_KEY=dev-secret-local-minio-postgres
+      - JWT_SECRET=dev-jwt-secret-local
+      - PORT=5000
     volumes:
-      # Mount del codi per hot-reload en desenvolupament
+      # Montar código fuente para desarrollo con recarga activa
       - .:/app
-      # Evitar sobreescriure les dependències instal·lades
-      - /app/__pycache__
-    restart: unless-stopped
+      # Evitar que el .venv del host sobreescriba el del contenedor
+      - /app/.venv
     networks:
-      - tickets_network
+      - iceberg_network
+
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local
 
 networks:
-  tickets_network:
+  iceberg_network:
     driver: bridge

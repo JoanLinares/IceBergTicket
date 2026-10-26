@@ -1,30 +1,39 @@
-# Dockerfile per la Plataforma de Gestió de Tickets
+# Dockerfile para IceBergTicket con uv
 FROM python:3.11-slim
 
-# Variables d'entorn per Python
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# Instalar binario de uv oficial
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Directori de treball
+# Variables de entorno para Python y uv
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
 WORKDIR /app
 
-# Instal·lar dependències del sistema
-RUN apt-get update && apt-get install -y \
+# Dependencias del sistema (compilación de C y cliente postgres)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    g++ \
     libpq-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar requirements primer (cache de Docker)
-COPY requirements.txt .
+# Copiar definiciones de dependencias de uv primero (aprovecha la caché de capas)
+COPY pyproject.toml uv.lock ./
 
-# Instal·lar dependències Python
-RUN pip install --no-cache-dir -r requirements.txt
+# Sincronizar dependencias en el contenedor con uv
+RUN uv sync --frozen --no-install-project
 
-# Copiar el codi de l'aplicació
+# Copiar el resto del código del proyecto
 COPY . .
 
-# Exposar el port de Flask
+# Instalar el paquete en modo editable / proyecto
+RUN uv sync --frozen
+
+# Puerto de la aplicación Flask
 EXPOSE 5000
 
-# Comando per executar l'aplicació
-CMD ["python", "app.py"]
+# Ejecutar la aplicación con uv
+CMD ["uv", "run", "python", "app.py"]
